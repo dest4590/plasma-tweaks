@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.svg" width="96" alt="plasma-tweaks">
+</p>
+
 # plasma-tweaks
 
 Two KDE Plasma customizations with one CLI. Python 3.10+, standard library only.
