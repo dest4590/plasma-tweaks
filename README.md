@@ -11,6 +11,9 @@ Two KDE Plasma customizations with one CLI. Python 3.10+, standard library only.
 
 ![tray preview](features/tray/preview.png)
 
+![microphone preview](features/microphone/preview.png)
+![microphone preview](features/microphone/preview2.png)
+
 ## Install
 
 ```sh
