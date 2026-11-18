@@ -120,7 +120,6 @@ class QmlValidationTests(unittest.TestCase):
     def test_bundled_feature_files_have_balanced_delimiters(self):
         repo_root = Path(__file__).resolve().parents[1]
         for rel in (
-            "features/app-volume/files/contents/ui/AppVolume.js",
             "features/microphone/files/contents/ui/MicStream.qml",
         ):
             path = repo_root / rel

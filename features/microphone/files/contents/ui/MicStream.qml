@@ -9,6 +9,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 
 import org.kde.plasma.plasmoid
+import org.kde.plasma.extras as PlasmaExtras
 import org.kde.kirigami as Kirigami
 
 import org.kde.taskmanager as TaskManager
@@ -52,6 +53,19 @@ MouseArea {
         if (mouse.button === Qt.LeftButton) {
             task.toggleMicMuted();
         }
+    }
+
+    Accessible.checkable: true
+    Accessible.checked: micStreamIconBox.task.micMuted
+    Accessible.name: micStreamIconBox.task.micMuted
+        ? i18nc("@action:button", "Unmute microphone")
+        : i18nc("@action:button", "Mute microphone")
+    Accessible.role: Accessible.Button
+
+    PlasmaExtras.Highlight {
+        anchors.fill: parent
+        hovered: micStreamIconBox.containsMouse
+        pressed: micStreamIconBox.pressed
     }
 
     Kirigami.Icon {

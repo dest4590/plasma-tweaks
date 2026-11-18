@@ -303,36 +303,16 @@ class ManagerTests(unittest.TestCase):
         self.manager.change("uninstall", ["microphone"])
         self.assertFalse(self.manager.shared[0].exists())
 
-    def test_microphone_and_app_volume_compose_and_rebuild_on_partial_uninstall(self):
-        self.manager.change("install", ["microphone", "app-volume"])
-        ic_dir = self.manager.package_targets("icontasks")[0]
-        self.assertTrue((ic_dir / "contents/ui/MicStream.qml").is_file())
-        self.assertTrue((ic_dir / "contents/ui/AppVolume.js").is_file())
-        self.assertIn("appVolumeEnabled", (ic_dir / "contents/config/main.xml").read_text())
-        self.assertIn("hasMicStream", (ic_dir / "contents/ui/Task.qml").read_text())
-
-        self.manager.change("uninstall", ["microphone"])
-        self.assertFalse((ic_dir / "contents/ui/MicStream.qml").exists())
-        self.assertTrue((ic_dir / "contents/ui/AppVolume.js").is_file())
-        self.assertNotIn("hasMicStream", (ic_dir / "contents/ui/Task.qml").read_text())
-        state = self.manager.load()
-        self.assertEqual(state["desired"], ["app-volume"])
-        self.assertEqual(state["active"], ["app-volume"])
-
-        self.manager.change("uninstall", ["app-volume"])
-        self.assertFalse(ic_dir.exists())
-
     def test_reinstall_keeps_original_backup(self):
         target = self.manager.package_targets("icontasks")[0]
         target.mkdir(parents=True)
         (target / "original").write_text("before")
         self.manager.change("install", ["microphone"])
-        self.manager.change("install", ["app-volume"])
-        self.manager.change("uninstall", ["microphone", "app-volume"])
+        self.manager.change("uninstall", ["microphone"])
         self.assertEqual((target / "original").read_text(), "before")
 
     def test_rebase_is_idempotent_and_preserves_upstream_changes(self):
-        self.manager.change("install", ["tray", "microphone", "app-volume"])
+        self.manager.change("install", ["tray", "microphone"])
         h1 = self.manager.load()["packages"]["icontasks"]["output_hash"]
         self.manager.rebase()
         h2 = self.manager.load()["packages"]["icontasks"]["output_hash"]
@@ -352,15 +332,15 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual((self.manager.package_targets("tray")[0] / "contents/ui/main.qml").read_text(), before_main)
 
     def test_preflight_rebuilds_or_disables_incompatible_package_without_blocking(self):
-        self.manager.change("install", ["tray", "app-volume"])
+        self.manager.change("install", ["tray", "microphone"])
         (self.plugins / "plasma/applets/org.kde.plasma.systemtray.so").write_bytes(b"new incompatible tray")
         self.break_tray = True
         res = self.manager.preflight()
         self.assertEqual(res["action"], "rebuilt")
         self.assertIn("tray", res["disabled"])
         state = self.manager.load()
-        self.assertEqual(state["desired"], ["tray", "app-volume"])
-        self.assertEqual(state["active"], ["app-volume"])
+        self.assertEqual(state["desired"], ["tray", "microphone"])
+        self.assertEqual(state["active"], ["microphone"])
         self.assertFalse(self.manager.package_targets("tray")[0].exists())
         self.assertTrue(self.manager.package_targets("icontasks")[0].exists())
 

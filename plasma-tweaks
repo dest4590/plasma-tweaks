@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
 
 import qml_validation
 
-FEATURE_ORDER = ("tray", "microphone", "app-volume")
+FEATURE_ORDER = ("tray", "microphone")
 PACKAGES = {
     "tray": {
         "applet": "org.kde.plasma.systemtray",
@@ -35,13 +35,12 @@ PACKAGES = {
         "plugin": "org.local.taskmanager",
         "system_plugin": "org.kde.plasma.taskmanager.so",
         "resource_prefix": ":/qt/qml/plasma/applet/org/kde/plasma/taskmanager/",
-        "features": ("microphone", "app-volume"),
+        "features": ("microphone",),
     },
 }
 FEATURE_PACKAGE = {
     "tray": "tray",
     "microphone": "icontasks",
-    "app-volume": "icontasks",
 }
 
 PY_EXTRACT_CODE = """
@@ -968,7 +967,7 @@ class Manager:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("install", "uninstall", "status", "rebase", "doctor", "preflight"))
-    parser.add_argument("features", nargs="*", metavar="FEATURE", help="tray, microphone, app-volume, or all (default)")
+    parser.add_argument("features", nargs="*", metavar="FEATURE", help="tray, microphone, or all (default)")
     parser.add_argument(
         "--restart",
         action="store_true",
@@ -1014,7 +1013,7 @@ def main() -> int:
         else:
             names = args.features or ["all"]
             if any(n not in (*FEATURE_ORDER, "all") for n in names) or ("all" in names and len(names) != 1):
-                parser.error("Choose tray, microphone, app-volume, any combination, or all on its own.")
+                parser.error("Choose tray, microphone, any combination, or all on its own.")
             names = list(FEATURE_ORDER) if names == ["all"] else list(dict.fromkeys(names))
 
             if args.action == "status":

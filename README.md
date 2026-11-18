@@ -4,20 +4,17 @@
 
 # plasma-tweaks
 
-Three KDE Plasma customizations with one CLI. Python 3.10+, standard library only.
+Two KDE Plasma customizations with one CLI. Python 3.10+, standard library only.
 
 Instead of bundling static copies of KDE widgets, `plasma-tweaks` extracts the QML/config resources from your installed Plasma plugins at install/rebase time, applies targeted patches, validates the staged package, and publishes local overrides.
 
 - `tray`: compact Windows-style system tray, small icons, names on hover, and an expand arrow on the left.
 - `microphone`: microphone activity indicators and mute controls in Icons-only Task Manager.
-- `app-volume`: mouse wheel / touchpad volume control (5 percentage point steps, 0–100%, preserves mute state) over running tasks with output audio streams in Icons-only Task Manager, with range display in tooltips.
 
 ![tray preview](features/tray/preview.png)
 
 ![microphone preview](features/microphone/preview.png)
 ![microphone preview](features/microphone/preview2.png)
-
-![volume preview](features/app-volume/preview.mp4)
 
 ## Requirements
 
@@ -33,7 +30,7 @@ Instead of bundling static copies of KDE widgets, `plasma-tweaks` extracts the Q
 
 ## Install
 
-`all` installs all three features (`tray`, `microphone`, `app-volume`):
+`all` installs both features (`tray`, `microphone`):
 
 ```sh
 git clone https://github.com/dest4590/plasma-tweaks.git
@@ -45,14 +42,12 @@ Or install individual features:
 
 ```sh
 ./plasma-tweaks install tray --restart
-./plasma-tweaks install microphone app-volume --restart
+./plasma-tweaks install microphone --restart
 ./plasma-tweaks status
 ./plasma-tweaks doctor
 ```
 
 Run as your desktop user, without `sudo`. `--restart` restarts `plasma-plasmashell.service` (briefly hides the panel). Without it, files are staged and published, and take effect on next login.
-
-`microphone` and `app-volume` both customize `org.kde.plasma.icontasks` and are composed into a single local override. Uninstalling one rebuilds `org.kde.plasma.icontasks` with only the remaining feature.
 
 ## Update, Rebase, and Remove
 
@@ -77,10 +72,6 @@ Both `$XDG_CONFIG_HOME/systemd/user/plasma-plasmashell.service.d/zz-plasma-tweak
 - If a package is incompatible with the new KDE resources, `preflight` disables only the affected override so the stock system widget is used and `plasmashell` still starts normally.
 
 If your session does not use `plasma-plasmashell.service` and `~/.local/bin` is not ahead of `/usr/bin` in `PATH`, uninstall before upgrading Plasma and check `./plasma-tweaks doctor`.
-
-## App-volume notes
-
-Plasma 6.8.3 introduced an upstream `AdjustVolume` option in `wheelEnabled`, which replaces task switching globally, scales deltas by `stream.volume / loudest` (leaving 0% streams at 0%), and auto-mutes at 0%. `app-volume` extends `MouseHandler.qml` and `ToolTipInstance.qml` instead of adding a second `WheelHandler`: when `appVolumeEnabled` is enabled (default) and the cursor is over a task with output streams, scrolling adjusts each stream by 5 percentage points without changing mute state or switching tasks; otherwise normal `wheelEnabled` behavior applies.
 
 ## Development
 
