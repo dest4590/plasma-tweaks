@@ -16,6 +16,10 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import qml_validation
 
 FEATURE_ORDER = ("tray", "microphone", "app-volume")
 PACKAGES = {
@@ -312,6 +316,7 @@ def validate_staged_package(pkg_dir: Path, pkg_name: str) -> None:
             ET.fromstring(main_xml.read_text())
         except ET.ParseError as exc:
             raise ValueError(f"[{pkg_name}] Invalid contents/config/main.xml: {exc}") from exc
+    qml_validation.validate_qml_directory(pkg_dir, pkg_name)
 
 
 def systemd_quote(value: str) -> str:
@@ -435,7 +440,7 @@ class Manager:
             if exists(path):
                 copy(path, directory / str(i))
 
-    def restore(self, key: str, paths: list[Path]) -> bool:
+    def restore(self, key: str, paths: list[Path], *, retain: bool = False) -> bool:
         directory = self.state / "backup" / key
         if not directory.is_dir():
             raise ValueError(f"Missing rollback snapshot: {directory}")
@@ -446,7 +451,8 @@ class Manager:
             if exists(saved):
                 copy(saved, path)
                 restored_user_files = True
-        remove(directory)
+        if not retain:
+            remove(directory)
         return restored_user_files
 
     def _package_sources(self, pkg_name: str, platform: dict) -> dict[str, Path]:
@@ -522,32 +528,37 @@ class Manager:
         active_pkgs = [
             pkg for pkg in PACKAGES if any(f in state["active"] for f in PACKAGES[pkg]["features"])
         ]
-        plugin_path = ":".join(
-            [str(self.plugin_root / pkg) for pkg in active_pkgs]
-            + state.get("extra_plugins", [])
-            + [state["plugins"]]
-        )
+        plugin_parts = [str(self.plugin_root / pkg) for pkg in active_pkgs] + state.get("extra_plugins", [])
+        if active_pkgs and state.get("plugins"):
+            plugin_parts.append(state["plugins"])
+        plugin_path = ":".join(plugin_parts)
+
         self.shared[0].parent.mkdir(parents=True, exist_ok=True)
         dropin = self.shared[0].with_suffix(".new")
         remove(dropin)
-        dropin.write_text(
-            "[Service]\n"
-            f"ExecStartPre=-{shlex.quote(str(self.self_exec))} preflight\n"
-            'Environment="QT_PLUGIN_PATH=' + systemd_quote(plugin_path) + '"\n'
-        )
+        dropin_lines = [
+            "[Service]",
+            f"ExecStartPre=-{shlex.quote(str(self.self_exec))} preflight",
+        ]
+        if plugin_path:
+            dropin_lines.append('Environment="QT_PLUGIN_PATH=' + systemd_quote(plugin_path) + '"')
+        dropin.write_text("\n".join(dropin_lines) + "\n")
         dropin.replace(self.shared[0])
 
-        remove(self.shared[1])
-        self.shared[1].parent.mkdir(parents=True, exist_ok=True)
-        launcher_tmp = self.shared[1].with_suffix(".new")
-        launcher_tmp.write_text(
-            "#!/bin/sh\n"
-            f"{shlex.quote(str(self.self_exec))} preflight >/dev/null 2>&1 || true\n"
-            "export QT_PLUGIN_PATH=" + shlex.quote(plugin_path) + "${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}\n"
-            "exec " + shlex.quote(state["shell"]) + ' "$@"\n'
-        )
-        launcher_tmp.chmod(0o755)
-        launcher_tmp.replace(self.shared[1])
+        if state.get("shell"):
+            remove(self.shared[1])
+            self.shared[1].parent.mkdir(parents=True, exist_ok=True)
+            launcher_tmp = self.shared[1].with_suffix(".new")
+            launcher_lines = [
+                "#!/bin/sh",
+                f"{shlex.quote(str(self.self_exec))} preflight >/dev/null 2>&1 || true",
+            ]
+            if plugin_path:
+                launcher_lines.append("export QT_PLUGIN_PATH=" + shlex.quote(plugin_path) + "${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}")
+            launcher_lines.append("exec " + shlex.quote(state["shell"]) + ' "$@"')
+            launcher_tmp.write_text("\n".join(launcher_lines) + "\n")
+            launcher_tmp.chmod(0o755)
+            launcher_tmp.replace(self.shared[1])
 
     def _save_manifest(self, state: dict) -> None:
         self.state.mkdir(parents=True, exist_ok=True)
@@ -622,16 +633,16 @@ class Manager:
                                         f"Restored pre-existing user override for {pkg_info['applet']}; "
                                         "verify it is compatible with your current Plasma version."
                                     )
-                            else:
-                                for p in pkg_targets:
-                                    remove(p)
+                            elif any(f in state.get("active", []) for f in pkg_info["features"]):
+                                raise ValueError(f"Missing rollback snapshot: {self.state / 'backup' / pkg_name}")
                             new_disabled.pop(pkg_name, None)
                         elif pkg_name in disabled:
-                            if (self.state / "backup" / pkg_name).is_dir():
-                                self.restore(pkg_name, pkg_targets)
-                            else:
-                                for p in pkg_targets:
-                                    remove(p)
+                            if pkg_name in state.get("packages", {}):
+                                if (self.state / "backup" / pkg_name).is_dir():
+                                    self.restore(pkg_name, pkg_targets, retain=True)
+                                else:
+                                    for p in pkg_targets:
+                                        remove(p)
                             new_disabled[pkg_name] = disabled[pkg_name]
                         elif pkg_name in staged_packages:
                             self.backup(pkg_name, pkg_targets)
@@ -767,6 +778,46 @@ class Manager:
                 "disabled": updated.get("disabled", {}),
             }
 
+    def _disable_all_active(self, state: dict, desired: list[str], reason: str) -> dict:
+        disabled = dict(state.get("disabled", {}))
+        with recovery_directory(self.data) as snapshot:
+            paths = self.targets() + [self.state]
+            for i, path in enumerate(paths):
+                if exists(path):
+                    copy(path, snapshot / str(i))
+            try:
+                for pkg_name, pkg_info in PACKAGES.items():
+                    pkg_features = [f for f in pkg_info["features"] if f in desired]
+                    if not pkg_features:
+                        continue
+                    pkg_targets = self.package_targets(pkg_name)
+                    if pkg_name in state.get("packages", {}):
+                        if (self.state / "backup" / pkg_name).is_dir():
+                            self.restore(pkg_name, pkg_targets, retain=True)
+                        else:
+                            for p in pkg_targets:
+                                remove(p)
+                    disabled[pkg_name] = {"features": pkg_features, "reason": reason}
+                state["active"] = []
+                state["packages"] = {}
+                state["disabled"] = disabled
+                self._write_shared_files(state)
+                self._save_manifest(state)
+            except BaseException:
+                for i, path in enumerate(paths):
+                    try:
+                        staged_r = snapshot / f"restore-{i}"
+                        if exists(snapshot / str(i)):
+                            copy(snapshot / str(i), staged_r)
+                        remove(path)
+                        if exists(staged_r):
+                            path.parent.mkdir(parents=True, exist_ok=True)
+                            staged_r.replace(path)
+                    except OSError as rollback_error:
+                        print(f"Could not restore {path}: {rollback_error}", file=sys.stderr)
+                raise
+        return {"action": "disabled", "disabled": disabled}
+
     def preflight(self) -> dict:
         with self.locked():
             if not self.manifest.exists():
@@ -775,7 +826,10 @@ class Manager:
             desired = list(state["desired"])
             if not desired:
                 return {"action": "noop"}
-            platform = discover(self.shared[1], self.data)
+            try:
+                platform = discover(self.shared[1], self.data)
+            except Exception as exc:
+                return self._disable_all_active(state, desired, f"Platform discovery failed: {exc}")
             stale_pkgs: set[str] = set()
             for pkg_name in {FEATURE_PACKAGE[f] for f in desired}:
                 pkg_state = state.get("packages", {}).get(pkg_name)
@@ -853,6 +907,7 @@ class Manager:
         if ext_kind == "none":
             report["ok"] = False
             report["issues"].append("No Qt 6 resource extractor available.")
+        report["qml_validator"] = qml_validation.find_qmlformat() or "delimiter-fallback"
 
         try:
             state = self.load()

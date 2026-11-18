@@ -257,10 +257,21 @@ class ManagerTests(unittest.TestCase):
 
         self.p_discover = patch.object(cli, "discover", side_effect=fake_discover)
         self.p_extract = patch.object(cli, "extract_resources", side_effect=fake_extract)
+        self.p_qml = patch.object(cli.qml_validation, "validate_qml_directory", return_value=[])
         self.p_discover.start()
         self.p_extract.start()
+        self.p_qml.start()
         self.addCleanup(self.p_discover.stop)
         self.addCleanup(self.p_extract.stop)
+        self.addCleanup(self.p_qml.stop)
+
+    def test_install_does_not_touch_unmanaged_package(self):
+        target = self.manager.package_targets("icontasks")[0]
+        target.mkdir(parents=True)
+        (target / "user.txt").write_text("unrelated")
+        self.manager.change("install", ["tray"])
+        self.manager.change("uninstall", ["tray"])
+        self.assertEqual((target / "user.txt").read_text(), "unrelated")
 
     def test_install_and_restore_tray(self):
         target = self.manager.package_targets("tray")[0]
@@ -344,6 +355,44 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(state["active"], ["app-volume"])
         self.assertFalse(self.manager.package_targets("tray")[0].exists())
         self.assertTrue(self.manager.package_targets("icontasks")[0].exists())
+
+    def test_preflight_disable_preserves_backup_and_user_files_across_runs(self):
+        target = self.manager.package_targets("tray")[0]
+        target.mkdir(parents=True)
+        (target / "original").write_text("user tray")
+        self.manager.change("install", ["tray"])
+        (self.plugins / "plasma/applets/org.kde.plasma.systemtray.so").write_bytes(b"updated")
+        self.break_tray = True
+
+        self.manager.preflight()
+        self.assertTrue((self.manager.state / "backup/tray").is_dir())
+        self.assertEqual((target / "original").read_text(), "user tray")
+
+        self.manager.preflight()
+        self.assertTrue((self.manager.state / "backup/tray").is_dir())
+        self.assertEqual((target / "original").read_text(), "user tray")
+
+        self.manager.change("uninstall", ["tray"])
+        self.assertEqual((target / "original").read_text(), "user tray")
+        self.assertFalse(self.manager.manifest.exists())
+
+    def test_preflight_disables_active_packages_when_discover_fails(self):
+        target = self.manager.package_targets("tray")[0]
+        target.mkdir(parents=True)
+        (target / "original").write_text("user tray")
+        self.manager.change("install", ["tray"])
+
+        with patch.object(cli, "discover", side_effect=ValueError("qtpaths unavailable")):
+            res = self.manager.preflight()
+
+        self.assertEqual(res["action"], "disabled")
+        self.assertIn("tray", res["disabled"])
+        self.assertEqual((target / "original").read_text(), "user tray")
+        self.assertTrue((self.manager.state / "backup/tray").is_dir())
+        state = self.manager.load()
+        self.assertEqual(state["desired"], ["tray"])
+        self.assertEqual(state["active"], [])
+        self.assertNotIn("plasma-tweaks-plugins", self.manager.shared[0].read_text())
 
     def test_shared_symlink_restored_exactly(self):
         launcher = self.manager.shared[1]
@@ -454,9 +503,24 @@ class ManagerTests(unittest.TestCase):
             cli.Manager(ROOT, self.home, Path("relative"), self.home / "config")
 
     def test_doctor_is_read_only(self):
-        report = self.manager.doctor()
+        with patch.object(cli, "detect_extractor", return_value=("python", "PySide6.QtCore")):
+            report = self.manager.doctor()
         self.assertTrue(report["ok"])
         self.assertFalse(self.manager.state.exists())
+
+    def test_doctor_reports_missing_extractor(self):
+        with patch.object(cli, "detect_extractor", return_value=("none", "")):
+            report = self.manager.doctor()
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("resource extractor" in i for i in report["issues"]))
+
+    def test_broken_qml_syntax_blocks_publish(self):
+        self.manager.change("install", ["tray"])
+        before = (self.manager.package_targets("tray")[0] / "contents/ui/main.qml").read_text()
+        with patch.object(cli.qml_validation, "validate_qml_directory", side_effect=ValueError("bad qml")):
+            with self.assertRaisesRegex(ValueError, "bad qml"):
+                self.manager.rebase()
+        self.assertEqual((self.manager.package_targets("tray")[0] / "contents/ui/main.qml").read_text(), before)
 
 
 if __name__ == "__main__":
