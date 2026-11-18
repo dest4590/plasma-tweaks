@@ -435,14 +435,6 @@ class ManagerTests(unittest.TestCase):
         self.assertFalse(self.manager.package_targets("icontasks")[0].exists())
         self.assertTrue((self.manager.package_targets("tray")[0] / "metadata.json").exists())
 
-    def test_legacy_install_refused(self):
-        legacy = self.manager.config / "systemd/user/plasma-plasmashell.service.d/microphone-icon.conf"
-        legacy.parent.mkdir(parents=True)
-        legacy.write_text("legacy")
-        with self.assertRaisesRegex(ValueError, "Legacy installation"):
-            self.manager.change("install", ["tray"])
-        self.assertEqual(legacy.read_text(), "legacy")
-
     def test_missing_backup_does_not_remove_install(self):
         self.manager.change("install", ["tray"])
         cli.remove(self.manager.state / "backup/tray")

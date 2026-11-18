@@ -587,15 +587,6 @@ class Manager:
         tmp.write_text(json.dumps(clean, indent=2) + "\n")
         tmp.replace(self.manifest)
 
-    def _check_legacy(self) -> None:
-        for old in (
-            self.data / "plasma-icon-tray-install/manifest.json",
-            self.config / "systemd/user/plasma-plasmashell.service.d/icon-tray.conf",
-            self.config / "systemd/user/plasma-plasmashell.service.d/microphone-icon.conf",
-        ):
-            if exists(old):
-                raise ValueError(f"Legacy installation found: {old}. Uninstall it using its original installer first.")
-
     def _apply_plan(
         self,
         state: dict,
@@ -719,7 +710,6 @@ class Manager:
             state = self.load()
             desired = list(state["desired"])
             if action == "install":
-                self._check_legacy()
                 for n in names:
                     if n not in desired:
                         desired.append(n)
