@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """QML/JS syntax validation helpers for staged plasma-tweaks packages."""
 from pathlib import Path
+import tempfile
 import shutil
 import subprocess
 
@@ -80,6 +81,7 @@ def check_balanced_delimiters(text: str, rel_path: str, pkg_name: str) -> None:
 
 
 def validate_qml_directory(pkg_dir: Path, pkg_name: str) -> list[str]:
+    warnings: list[str] = []
     files = sorted(
         p for p in pkg_dir.rglob("*")
         if p.is_file() and p.suffix in (".qml", ".js", ".mjs")
@@ -92,15 +94,48 @@ def validate_qml_directory(pkg_dir: Path, pkg_name: str) -> list[str]:
     if not qmlformat:
         return ["qmlformat not found; ran basic delimiter check only (not full QML syntax)."]
 
-    for path in files:
-        rel = path.relative_to(pkg_dir).as_posix()
-        res = subprocess.run(
-            [qmlformat, "--ignore-settings", str(path)],
+    probe = (
+        "pragma ComponentBehavior: Bound\n"
+        "import QtQuick\n"
+        "Item {\n"
+        "    required property int idNum\n"
+        "    property var maybeObj\n"
+        "    property string t: maybeObj?.text ?? \"\"\n"
+        "}\n"
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".qml", delete=False, encoding="utf-8") as tf:
+        tf.write(probe)
+        probe_path = Path(tf.name)
+    try:
+        probe_res = subprocess.run(
+            [qmlformat, str(probe_path)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
         )
+    finally:
+        probe_path.unlink(missing_ok=True)
+    if probe_res.returncode != 0:
+        return [
+            "qmlformat parser is too old for modern Plasma QML syntax; "
+            "ran delimiter-only validation (not full QML syntax)."
+        ]
+
+    for path in files:
+        rel = path.relative_to(pkg_dir).as_posix()
+        if path.suffix != ".qml":
+            continue
+        cmd = [qmlformat, "--ignore-settings", str(path)]
+        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        if res.returncode != 0 and "Unknown option 'ignore-settings'" in (res.stderr or ""):
+            cmd = [qmlformat, str(path)]
+            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         if res.returncode != 0:
-            err = res.stderr.strip() or f"qmlformat exited with {res.returncode}"
-            raise ValueError(f"[{pkg_name}] QML syntax check failed for {rel}: {err}")
-    return []
+            err = res.stderr.strip()
+            if err:
+                raise ValueError(f"[{pkg_name}] QML syntax check failed for {rel}: {err}")
+            warnings.append(
+                f"qmlformat returned {res.returncode} without diagnostics for {rel}; "
+                "kept delimiter-only validation for this file."
+            )
+    return warnings

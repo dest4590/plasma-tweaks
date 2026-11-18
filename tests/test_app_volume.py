@@ -69,13 +69,8 @@ assert.strictEqual(applyVolumeSteps([gone, ok], 1, MIN, MAX, 5), true);
 assert.strictEqual(volumeToPercent(ok.model.Volume, MIN, MAX), 55);
 """)
 
-    def test_modifier_and_tooltip_range_formatting(self):
+    def test_tooltip_range_formatting(self):
         self.run_js("""
-const ALT = 0x08000000;
-assert.strictEqual(modifierMatches(0, 0, ALT), true);
-assert.strictEqual(modifierMatches(0, 1, ALT), false);
-assert.strictEqual(modifierMatches(ALT, 1, ALT), true);
-
 const MAX = 65536;
 assert.strictEqual(formatStreamRange([{ volume: Math.round(0.5 * MAX) }, { volume: Math.round(0.5 * MAX) }], 0, MAX), "50%");
 assert.strictEqual(formatStreamRange([{ volume: Math.round(0.4 * MAX) }, { volume: Math.round(0.75 * MAX) }], 0, MAX), "40%\\u201375%");

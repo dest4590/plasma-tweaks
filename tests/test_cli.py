@@ -19,7 +19,15 @@ def make_fake_raw_systemtray(out_dir: Path, extra_line: str = "") -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "CompactApplet.qml").write_text(
         "import QtQuick\nimport org.kde.plasma.plasmoid\nItem {\n"
+        "    mainText: plasmoidItem?.toolTipMainText ?? \"\"\n"
+        "    subText: plasmoidItem?.toolTipSubText ?? \"\"\n"
         "    location: if ((plasmoidItem?.parent as AbstractItem)?.inHiddenLayout && Plasmoid.location !== PlasmaCore.Types.LeftEdge) {\n"
+        "        return PlasmaCore.Types.RightEdge;\n"
+        "    } else {\n"
+        "        return Plasmoid.location;\n"
+        "    }\n"
+        "    textFormat: plasmoidItem?.toolTipTextFormat ?? Text.AutoText\n"
+        "    mainItem: plasmoidItem?.toolTipItem ?? null\n"
         "    property PlasmoidItem plasmoidItem\n}\n"
     )
     (out_dir / "AbstractItem.qml").write_text(

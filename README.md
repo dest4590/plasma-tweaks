@@ -10,7 +10,7 @@ Instead of bundling static copies of KDE widgets, `plasma-tweaks` extracts the Q
 
 - `tray`: compact Windows-style system tray, small icons, names on hover, and an expand arrow on the left.
 - `microphone`: microphone activity indicators and mute controls in Icons-only Task Manager.
-- `app-volume`: mouse wheel / touchpad volume control (5 percentage point steps, 0–100%, preserves mute state) over running tasks with output audio streams in Icons-only Task Manager, with optional `Alt` modifier and range display in tooltips.
+- `app-volume`: mouse wheel / touchpad volume control (5 percentage point steps, 0–100%, preserves mute state) over running tasks with output audio streams in Icons-only Task Manager, with range display in tooltips.
 
 ![tray preview](features/tray/preview.png)
 
@@ -78,7 +78,7 @@ If your session does not use `plasma-plasmashell.service` and `~/.local/bin` is 
 
 ## App-volume notes
 
-Plasma 6.8.3 introduced an upstream `AdjustVolume` option in `wheelEnabled`, which replaces task switching globally, scales deltas by `stream.volume / loudest` (leaving 0% streams at 0%), and auto-mutes at 0%. `app-volume` extends `MouseHandler.qml` and `ToolTipInstance.qml` instead of adding a second `WheelHandler`: when `appVolumeEnabled` is enabled (default) and the configured modifier (`None` by default, or `Alt`) matches over a task with output streams, scrolling adjusts each stream by 5 percentage points without changing mute state or switching tasks; otherwise normal `wheelEnabled` behavior applies.
+Plasma 6.8.3 introduced an upstream `AdjustVolume` option in `wheelEnabled`, which replaces task switching globally, scales deltas by `stream.volume / loudest` (leaving 0% streams at 0%), and auto-mutes at 0%. `app-volume` extends `MouseHandler.qml` and `ToolTipInstance.qml` instead of adding a second `WheelHandler`: when `appVolumeEnabled` is enabled (default) and the cursor is over a task with output streams, scrolling adjusts each stream by 5 percentage points without changing mute state or switching tasks; otherwise normal `wheelEnabled` behavior applies.
 
 ## Development
 

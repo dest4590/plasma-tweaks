@@ -8,19 +8,39 @@
   "patches": {
     "contents/applet/CompactApplet.qml": [
       {
-        "op": "insert_after",
-        "anchor": "import org.kde.plasma.plasmoid\n",
-        "text": "import org.kde.plasma.plasmoid as PlasmaPlasmoid\nimport \"../ui\" as Tray\n"
+        "op": "replace",
+        "old": "    mainText: plasmoidItem?.toolTipMainText ?? \"\"",
+        "new": "    mainText: plasmoidItem ? plasmoidItem.toolTipMainText : \"\""
+      },
+      {
+        "op": "replace",
+        "old": "    subText: plasmoidItem?.toolTipSubText ?? \"\"",
+        "new": "    subText: plasmoidItem ? plasmoidItem.toolTipSubText : \"\""
       },
       {
         "op": "replace",
         "old": "    location: if ((plasmoidItem?.parent as AbstractItem)?.inHiddenLayout && Plasmoid.location !== PlasmaCore.Types.LeftEdge) {",
-        "new": "    location: if ((plasmoidItem?.parent as Tray.AbstractItem)?.inHiddenLayout && Plasmoid.location !== PlasmaCore.Types.LeftEdge) {"
+        "new": "    location: plasmoidItem && plasmoidItem.parent && plasmoidItem.parent.inHiddenLayout && Plasmoid.location !== PlasmaCore.Types.LeftEdge ? PlasmaCore.Types.RightEdge : Plasmoid.location"
+      },
+      {
+        "op": "replace",
+        "old": "        return PlasmaCore.Types.RightEdge;\n    } else {\n        return Plasmoid.location;\n    }",
+        "new": ""
+      },
+      {
+        "op": "replace",
+        "old": "    textFormat: plasmoidItem?.toolTipTextFormat ?? Text.AutoText",
+        "new": "    textFormat: plasmoidItem ? plasmoidItem.toolTipTextFormat : Text.AutoText"
+      },
+      {
+        "op": "replace",
+        "old": "    mainItem: plasmoidItem?.toolTipItem ?? null",
+        "new": "    mainItem: plasmoidItem ? plasmoidItem.toolTipItem : null"
       },
       {
         "op": "replace",
         "old": "    property PlasmoidItem plasmoidItem",
-        "new": "    property PlasmaPlasmoid.PlasmoidItem plasmoidItem"
+        "new": "    property Item plasmoidItem"
       }
     ],
     "contents/ui/AbstractItem.qml": [

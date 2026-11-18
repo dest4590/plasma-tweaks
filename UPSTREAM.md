@@ -13,4 +13,4 @@
 
 ## Upstream conflict notes
 
-- Plasma 6.8.3 added `wheelEnabled === 3` (`AdjustVolume`) in `taskmanager` `MouseHandler.qml` / `ConfigBehavior.qml` / `main.xml`. `app-volume` extends the existing `WheelHandler` in `MouseHandler.qml` rather than adding a competing handler, preserving normal task-wheel behavior when no output streams are present or the modifier does not match, shifting multiple streams by equal percentage points, and keeping mute state unchanged.
+- Plasma 6.8.3 added `wheelEnabled === 3` (`AdjustVolume`) in `taskmanager` `MouseHandler.qml` / `ConfigBehavior.qml` / `main.xml`. `app-volume` extends the existing `WheelHandler` in `MouseHandler.qml` rather than adding a competing handler, preserving normal task-wheel behavior when no output streams are present, shifting multiple streams by equal percentage points, and keeping mute state unchanged.

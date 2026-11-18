@@ -46,13 +46,6 @@ function consumeWheelSteps(acc, target, angleDeltaY, pixelDeltaY) {
     return 0;
 }
 
-function modifierMatches(eventModifiers, requiredMode, altFlag) {
-    if (requiredMode === 1) {
-        return (eventModifiers & altFlag) !== 0;
-    }
-    return true;
-}
-
 function volumeToPercent(volume, minimalVolume, normalVolume) {
     var span = normalVolume - minimalVolume;
     if (span <= 0) {
