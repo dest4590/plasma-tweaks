@@ -4,6 +4,7 @@
 import argparse
 from contextlib import contextmanager
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,24 +13,86 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent
-FEATURES = {"tray": ("systemtray", "icontray"), "microphone": ("icontasks", "taskmanager")}
-SUPPORTED = {"6.8.2", "6.8.3"}
+
+FEATURE_ORDER = ("tray", "microphone", "app-volume")
+PACKAGES = {
+    "tray": {
+        "applet": "org.kde.plasma.systemtray",
+        "plugin": "org.local.icontray",
+        "system_plugin": "org.kde.plasma.systemtray.so",
+        "resource_prefix": ":/qt/qml/plasma/applet/org/kde/plasma/systemtray/",
+        "features": ("tray",),
+    },
+    "icontasks": {
+        "applet": "org.kde.plasma.icontasks",
+        "plugin": "org.local.taskmanager",
+        "system_plugin": "org.kde.plasma.taskmanager.so",
+        "resource_prefix": ":/qt/qml/plasma/applet/org/kde/plasma/taskmanager/",
+        "features": ("microphone", "app-volume"),
+    },
+}
+FEATURE_PACKAGE = {
+    "tray": "tray",
+    "microphone": "icontasks",
+    "app-volume": "icontasks",
+}
+
+PY_EXTRACT_CODE = """
+import json, sys
+from pathlib import Path
+try:
+    from PySide6.QtCore import QCoreApplication, QDir, QDirIterator, QFile, QLibrary, QPluginLoader
+except ImportError:
+    from PyQt6.QtCore import QCoreApplication, QDir, QDirIterator, QFile, QLibrary, QPluginLoader
+
+app = QCoreApplication(sys.argv)
+plugin_path, prefix, out_dir = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+if not prefix.endswith("/"):
+    prefix += "/"
+lib = QLibrary(plugin_path)
+if not lib.load():
+    sys.stderr.write(f"Failed to load plugin {plugin_path}: {lib.errorString()}\\n")
+    sys.exit(1)
+it = QDirIterator(prefix, QDir.Filter.Files, QDirIterator.IteratorFlag.Subdirectories)
+count = 0
+while it.hasNext():
+    src = it.next()
+    rel = src[len(prefix):]
+    f = QFile(src)
+    if not f.open(QFile.OpenModeFlag.ReadOnly):
+        sys.stderr.write(f"Failed to open resource {src}\\n")
+        sys.exit(1)
+    dest = out_dir / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(bytes(f.readAll()))
+    f.close()
+    count += 1
+if count == 0:
+    sys.stderr.write(f"No resources found under {prefix} in {plugin_path}\\n")
+    sys.exit(1)
+md = QPluginLoader(plugin_path).metaData()
+meta = md.get("MetaData") if isinstance(md, dict) else None
+if meta:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "_plugin_metadata.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\\n")
+"""
 
 
-def exists(path):
+def exists(path: Path) -> bool:
     return path.exists() or path.is_symlink()
 
 
-def remove(path):
+def remove(path: Path) -> None:
     if path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
     elif exists(path):
         path.unlink()
 
 
-def copy(source, target):
+def copy(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     if source.is_symlink():
         target.symlink_to(os.readlink(source))
@@ -39,35 +102,224 @@ def copy(source, target):
         shutil.copy2(source, target)
 
 
-def discover(launcher):
-    shell = next((Path(folder) / "plasmashell" for folder in os.get_exec_path()
-                  if (Path(folder) / "plasmashell").is_file()
-                  and os.access(Path(folder) / "plasmashell", os.X_OK)
-                  and (Path(folder) / "plasmashell").resolve() != launcher.resolve()), None)
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def hash_directory(directory: Path) -> str:
+    h = hashlib.sha256()
+    for p in sorted(directory.rglob("*")):
+        rel = p.relative_to(directory).as_posix()
+        h.update(rel.encode("utf-8"))
+        if p.is_symlink():
+            h.update(b"L" + os.readlink(p).encode("utf-8"))
+        elif p.is_file():
+            h.update(b"F" + sha256_file(p).encode("ascii"))
+    return h.hexdigest()
+
+
+def find_qtpaths() -> str | None:
+    qtpaths = shutil.which("qtpaths6") or shutil.which("qtpaths-qt6")
+    if qtpaths:
+        return qtpaths
+    for candidate in ("/usr/lib/qt6/bin/qtpaths", "/usr/lib64/qt6/bin/qtpaths"):
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
+def find_system_metadata(qtpaths: str, applet_id: str, user_data: Path | None = None) -> Path | None:
+    rel = f"plasma/plasmoids/{applet_id}/metadata.json"
+    env = dict(os.environ)
+    env["XDG_DATA_HOME"] = "/nonexistent-plasma-tweaks-xdg-data-home"
+    try:
+        out = subprocess.check_output(
+            [qtpaths, "--locate-file", "GenericDataLocation", rel],
+            text=True,
+            env=env,
+        ).strip()
+        if out and Path(out).is_file():
+            resolved = Path(out).resolve()
+            if user_data is None or not resolved.is_relative_to(user_data.resolve()):
+                return Path(out)
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    for base in (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":"):
+        if base:
+            candidate = Path(base) / rel
+            if candidate.is_file():
+                resolved = candidate.resolve()
+                if user_data is None or not resolved.is_relative_to(user_data.resolve()):
+                    return candidate
+    return None
+
+
+def discover(launcher: Path, user_data: Path | None = None) -> dict:
+    shell = next(
+        (
+            Path(folder) / "plasmashell"
+            for folder in os.get_exec_path()
+            if (Path(folder) / "plasmashell").is_file()
+            and os.access(Path(folder) / "plasmashell", os.X_OK)
+            and (Path(folder) / "plasmashell").resolve() != launcher.resolve()
+        ),
+        None,
+    )
     if shell is None:
         raise ValueError("System plasmashell not found in PATH.")
     shell = shell.resolve()
     version = subprocess.check_output([str(shell), "--version"], text=True).strip().removeprefix("plasmashell ")
-    if version not in SUPPORTED:
-        raise ValueError(f"Unsupported Plasma {version}; supported snapshots: {', '.join(sorted(SUPPORTED))}.")
-    qtpaths = shutil.which("qtpaths6")
-    if not qtpaths:
-        qtpaths = next((p for p in ("/usr/lib/qt6/bin/qtpaths", "/usr/lib64/qt6/bin/qtpaths")
-                        if Path(p).is_file()), None)
+    qtpaths = find_qtpaths()
     if not qtpaths:
         raise ValueError("Qt 6 qtpaths not found. Install your distribution's Qt 6 tools.")
     plugins = Path(subprocess.check_output([qtpaths, "--plugin-dir"], text=True).strip())
     if not plugins.is_absolute() or not plugins.is_dir():
         raise ValueError(f"Invalid Qt plugin directory: {plugins}")
-    return shell, plugins, version
+    icontasks_meta = find_system_metadata(qtpaths, "org.kde.plasma.icontasks", user_data=user_data)
+    return {
+        "shell": shell,
+        "version": version,
+        "qtpaths": qtpaths,
+        "plugins": plugins,
+        "icontasks_metadata": icontasks_meta,
+    }
 
 
-def systemd_quote(value):
+def detect_extractor(root: Path) -> tuple[str, str]:
+    for candidate in (
+        root / "helper/build/plasma-tweaks-extract",
+        root / "helper/plasma-tweaks-extract",
+    ):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return ("binary", str(candidate))
+    in_path = shutil.which("plasma-tweaks-extract")
+    if in_path:
+        return ("binary", in_path)
+    for mod in ("PySide6.QtCore", "PyQt6.QtCore"):
+        res = subprocess.run(
+            [sys.executable, "-c", f"import {mod}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if res.returncode == 0:
+            return ("python", mod)
+    return ("none", "")
+
+
+def extract_resources(root: Path, plugin_path: Path, prefix: str, out_dir: Path) -> None:
+    kind, detail = detect_extractor(root)
+    if kind == "binary":
+        cmd = [detail, str(plugin_path), prefix, str(out_dir)]
+    elif kind == "python":
+        cmd = [sys.executable, "-c", PY_EXTRACT_CODE, str(plugin_path), prefix, str(out_dir)]
+    else:
+        raise ValueError(
+            "No Qt 6 resource extractor found. Install PySide6/PyQt6 or build helper/extract_qml.cpp."
+        )
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        err = res.stderr.strip() or f"extractor exited with {res.returncode}"
+        raise ValueError(f"Resource extraction failed for {plugin_path.name}: {err}")
+
+
+def apply_feature_patches(pkg_dir: Path, feature_dir: Path, feature_name: str) -> list[str]:
+    spec_path = feature_dir / "patches.json"
+    if not spec_path.is_file():
+        raise ValueError(f"[{feature_name}] Missing patch specification: {spec_path}")
+    spec = json.loads(spec_path.read_text())
+    changed_files: list[str] = []
+
+    for item in spec.get("copy_from", []):
+        src = pkg_dir / item["src"]
+        dst = pkg_dir / item["dst"]
+        if not src.is_file():
+            raise ValueError(f"[{feature_name}] Missing source file for copy_from: {item['src']}")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        changed_files.append(item["dst"])
+
+    files_dir = feature_dir / "files"
+    if files_dir.is_dir():
+        for src in sorted(files_dir.rglob("*")):
+            if src.is_file():
+                rel = src.relative_to(files_dir).as_posix()
+                dst = pkg_dir / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                changed_files.append(rel)
+
+    for rel, ops in spec.get("patches", {}).items():
+        target = pkg_dir / rel
+        if not target.is_file():
+            raise ValueError(f"[{feature_name}] Target file missing in extracted KDE resources: {rel}")
+        text = target.read_text()
+        for idx, op in enumerate(ops):
+            kind = op["op"]
+            if kind == "replace":
+                old = op["old"]
+                count = text.count(old)
+                if count != 1:
+                    raise ValueError(
+                        f"[{feature_name}] {rel} op #{idx} (replace): expected 1 match, found {count}"
+                    )
+                text = text.replace(old, op["new"], 1)
+            elif kind == "insert_after":
+                anchor = op["anchor"]
+                count = text.count(anchor)
+                if count != 1:
+                    raise ValueError(
+                        f"[{feature_name}] {rel} op #{idx} (insert_after): expected 1 match, found {count}"
+                    )
+                text = text.replace(anchor, anchor + op["text"], 1)
+            elif kind == "insert_before":
+                anchor = op["anchor"]
+                count = text.count(anchor)
+                if count != 1:
+                    raise ValueError(
+                        f"[{feature_name}] {rel} op #{idx} (insert_before): expected 1 match, found {count}"
+                    )
+                text = text.replace(anchor, op["text"] + anchor, 1)
+            else:
+                raise ValueError(f"[{feature_name}] {rel} op #{idx}: unknown op {kind!r}")
+        target.write_text(text)
+        if rel not in changed_files:
+            changed_files.append(rel)
+
+    return sorted(set(changed_files))
+
+
+def validate_staged_package(pkg_dir: Path, pkg_name: str) -> None:
+    meta_path = pkg_dir / "metadata.json"
+    if not meta_path.is_file():
+        raise ValueError(f"[{pkg_name}] Missing metadata.json after staging.")
+    meta = json.loads(meta_path.read_text())
+    expected_id = PACKAGES[pkg_name]["applet"]
+    expected_root = PACKAGES[pkg_name]["plugin"]
+    if meta.get("KPlugin", {}).get("Id") != expected_id:
+        raise ValueError(f"[{pkg_name}] Unexpected KPlugin.Id in metadata.json.")
+    if meta.get("X-Plasma-RootPath") != expected_root:
+        raise ValueError(f"[{pkg_name}] Unexpected X-Plasma-RootPath in metadata.json.")
+    main_qml = pkg_dir / "contents/ui/main.qml"
+    if not main_qml.is_file() or main_qml.stat().st_size == 0:
+        raise ValueError(f"[{pkg_name}] Missing or empty contents/ui/main.qml.")
+    main_xml = pkg_dir / "contents/config/main.xml"
+    if main_xml.is_file():
+        try:
+            ET.fromstring(main_xml.read_text())
+        except ET.ParseError as exc:
+            raise ValueError(f"[{pkg_name}] Invalid contents/config/main.xml: {exc}") from exc
+
+
+def systemd_quote(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("\n", "\\n").replace("\r", "\\r")
 
 
 @contextmanager
-def recovery_directory(data):
+def recovery_directory(data: Path):
     path = Path(tempfile.mkdtemp(prefix="plasma-tweaks-recovery-", dir=data))
     try:
         yield path
@@ -79,34 +331,93 @@ def recovery_directory(data):
 
 
 class Manager:
-    def __init__(self, root, home, data, config):
+    def __init__(self, root: Path, home: Path, data: Path, config: Path):
         self.root, self.home, self.data, self.config = map(Path, (root, home, data, config))
         if not all(p.is_absolute() for p in (self.home, self.data, self.config)):
             raise ValueError("HOME and XDG paths must be absolute.")
         if any(c in str(p) for p in (self.home, self.data, self.config) for c in ("\n", "\r", ":")):
             raise ValueError("HOME and XDG paths cannot contain newlines or colons.")
+        self.self_exec = self.root / "plasma-tweaks"
         self.state = self.data / "plasma-tweaks"
         self.manifest = self.state / "manifest.json"
         self.plugin_root = self.data / "plasma-tweaks-plugins"
-        self.shared = [self.config / "systemd/user/plasma-plasmashell.service.d/zz-plasma-tweaks.conf",
-                       self.home / ".local/bin/plasmashell"]
+        self.shared = [
+            self.config / "systemd/user/plasma-plasmashell.service.d/zz-plasma-tweaks.conf",
+            self.home / ".local/bin/plasmashell",
+        ]
 
-    def feature_targets(self, name):
-        applet, _ = FEATURES[name]
-        return [self.data / f"plasma/plasmoids/org.kde.plasma.{applet}", self.plugin_root / name]
+    def package_targets(self, pkg_name: str) -> list[Path]:
+        applet = PACKAGES[pkg_name]["applet"]
+        return [self.data / f"plasma/plasmoids/{applet}", self.plugin_root / pkg_name]
 
-    def targets(self):
-        return [p for name in FEATURES for p in self.feature_targets(name)] + self.shared
+    def targets(self) -> list[Path]:
+        return [p for pkg in PACKAGES for p in self.package_targets(pkg)] + self.shared
 
-    def load(self):
+    def _default_state(self) -> dict:
+        return {
+            "schema_version": 2,
+            "targets": list(map(str, self.targets())),
+            "desired": [],
+            "active": [],
+            "disabled": {},
+            "packages": {},
+        }
+
+    def load(self) -> dict:
         if not self.manifest.exists():
-            return {"targets": list(map(str, self.targets())), "installed": []}
-        state = json.loads(self.manifest.read_text())
-        if state.get("targets") != list(map(str, self.targets())):
-            raise ValueError("Paths differ from the installation snapshot. Restore the original HOME/XDG paths.")
-        if not isinstance(state.get("installed"), list) or any(n not in FEATURES for n in state["installed"]):
+            return self._default_state()
+        try:
+            state = json.loads(self.manifest.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Corrupted installation manifest ({self.manifest}): {exc}") from exc
+        if not isinstance(state, dict):
             raise ValueError("Invalid installation manifest; no files changed.")
-        return state
+        if state.get("schema_version") == 2:
+            if state.get("targets") != list(map(str, self.targets())):
+                raise ValueError("Paths differ from the installation snapshot. Restore the original HOME/XDG paths.")
+            for key in ("desired", "active"):
+                vals = state.get(key)
+                if not isinstance(vals, list) or any(n not in FEATURE_ORDER for n in vals):
+                    raise ValueError("Invalid installation manifest; no files changed.")
+            return state
+        return self._migrate_v1_state(state)
+
+    def _migrate_v1_state(self, v1: dict) -> dict:
+        old_targets = [
+            str(self.data / "plasma/plasmoids/org.kde.plasma.systemtray"),
+            str(self.plugin_root / "tray"),
+            str(self.data / "plasma/plasmoids/org.kde.plasma.icontasks"),
+            str(self.plugin_root / "microphone"),
+            *map(str, self.shared),
+        ]
+        if v1.get("targets") != old_targets:
+            raise ValueError("Paths differ from the installation snapshot. Restore the original HOME/XDG paths.")
+        installed = v1.get("installed")
+        if not isinstance(installed, list) or any(n not in ("tray", "microphone") for n in installed):
+            raise ValueError("Invalid legacy installation manifest; no files changed.")
+        for feat in installed:
+            if not (self.state / "backup" / feat).is_dir():
+                raise ValueError(f"Missing legacy backup for {feat}; refusing destructive migration.")
+        if installed and not (self.state / "backup/shared").is_dir():
+            raise ValueError("Missing legacy shared backup; refusing destructive migration.")
+        migrated = self._default_state()
+        migrated["desired"] = list(installed)
+        migrated["active"] = list(installed)
+        for k in ("shell", "plugins", "version", "extra_plugins"):
+            if k in v1:
+                migrated[k] = v1[k]
+        migrated["_migrated_from_v1"] = True
+        return migrated
+
+    def _finalize_v1_migration_backups(self) -> None:
+        old_mic_backup = self.state / "backup/microphone"
+        new_ic_backup = self.state / "backup/icontasks"
+        if old_mic_backup.is_dir() and not new_ic_backup.exists():
+            new_ic_backup.mkdir(parents=True, exist_ok=True)
+            if exists(old_mic_backup / "0"):
+                copy(old_mic_backup / "0", new_ic_backup / "0")
+            remove(old_mic_backup)
+        remove(self.plugin_root / "microphone")
 
     @contextmanager
     def locked(self):
@@ -115,148 +426,553 @@ class Manager:
             fcntl.flock(lock, fcntl.LOCK_EX)
             yield
 
-    def backup(self, key, paths):
+    def backup(self, key: str, paths: list[Path]) -> None:
         directory = self.state / "backup" / key
+        if directory.exists():
+            return
         directory.mkdir(parents=True)
         for i, path in enumerate(paths):
             if exists(path):
                 copy(path, directory / str(i))
 
-    def restore(self, key, paths):
+    def restore(self, key: str, paths: list[Path]) -> bool:
         directory = self.state / "backup" / key
         if not directory.is_dir():
             raise ValueError(f"Missing rollback snapshot: {directory}")
+        restored_user_files = False
         for i, path in enumerate(paths):
             remove(path)
             saved = directory / str(i)
             if exists(saved):
                 copy(saved, path)
+                restored_user_files = True
         remove(directory)
+        return restored_user_files
 
-    def change(self, action, names):
-        with self.locked():
-            state = self.load()
-            selected = [n for n in names if (n not in state["installed"]) == (action == "install")]
-            # Reinstall refreshes the files/plugins after a compatible Plasma update.
-            if action == "install":
-                selected = names
-            if not selected:
-                return False
-            if action == "install":
-                for old in (self.data / "plasma-icon-tray-install/manifest.json",
-                            self.config / "systemd/user/plasma-plasmashell.service.d/icon-tray.conf",
-                            self.config / "systemd/user/plasma-plasmashell.service.d/microphone-icon.conf"):
-                    if exists(old):
-                        raise ValueError(f"Legacy installation found: {old}. Uninstall it using its original installer first.")
-                shell, plugins, version = discover(self.shared[1])
-                for name in selected:
-                    system = "systemtray" if name == "tray" else "taskmanager"
-                    source = plugins / f"plasma/applets/org.kde.plasma.{system}.so"
-                    if not source.is_file():
-                        raise ValueError(f"System plugin not found: {source}")
-                    metadata = self.root / "features" / name / "plasmoid/metadata.json"
-                    if json.loads(metadata.read_text())["KPlugin"]["Id"] != f"org.kde.plasma.{FEATURES[name][0]}":
-                        raise ValueError(f"Unexpected plasmoid metadata: {metadata}")
-                state.update(shell=str(shell), plugins=str(plugins), version=version)
-                if "extra_plugins" not in state:
-                    state["extra_plugins"] = [p for p in os.environ.get("QT_PLUGIN_PATH", "").split(":")
-                                              if p and Path(p).is_absolute() and not Path(p).is_relative_to(self.plugin_root)]
-            # Snapshot both files and rollback data before touching anything.
+    def _package_sources(self, pkg_name: str, platform: dict) -> dict[str, Path]:
+        info = PACKAGES[pkg_name]
+        plugin_path = platform["plugins"] / "plasma/applets" / info["system_plugin"]
+        if not plugin_path.is_file():
+            raise ValueError(f"System plugin not found: {plugin_path}")
+        sources = {"plugin": plugin_path}
+        if pkg_name == "icontasks":
+            meta = platform.get("icontasks_metadata")
+            if not meta or not Path(meta).is_file():
+                raise ValueError("System metadata not found for org.kde.plasma.icontasks.")
+            sources["metadata"] = Path(meta)
+        return sources
+
+    def _build_package_in_staging(
+        self, pkg_name: str, features: list[str], platform: dict, stage_root: Path
+    ) -> dict:
+        sources = self._package_sources(pkg_name, platform)
+        source_hashes = {k: sha256_file(p) for k, p in sources.items()}
+        raw_dir = stage_root / f"{pkg_name}-raw"
+        pkg_dir = stage_root / pkg_name
+        plugin_stage = stage_root / f"{pkg_name}-plugin"
+        extract_resources(self.root, sources["plugin"], PACKAGES[pkg_name]["resource_prefix"], raw_dir)
+
+        for p in raw_dir.rglob("*"):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(raw_dir)
+            if rel.as_posix() in ("_plugin_metadata.json", "qmldir"):
+                continue
+            if rel.as_posix() in ("main.xml", "config.qml"):
+                dst = pkg_dir / "contents/config" / rel.name
+            else:
+                dst = pkg_dir / "contents/ui" / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p, dst)
+
+        if pkg_name == "tray":
+            raw_meta = raw_dir / "_plugin_metadata.json"
+            if not raw_meta.is_file():
+                raise ValueError("[tray] Plugin metadata missing from extracted systemtray.so.")
+            meta = json.loads(raw_meta.read_text())
+            meta.setdefault("KPackageStructure", "Plasma/Applet")
+            meta.setdefault("KPlugin", {})["Id"] = PACKAGES[pkg_name]["applet"]
+        else:
+            meta = json.loads(sources["metadata"].read_text())
+
+        meta["X-Plasma-RootPath"] = PACKAGES[pkg_name]["plugin"]
+        (pkg_dir / "metadata.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
+
+        changed_files: list[str] = ["metadata.json"]
+        for feat in features:
+            changed_files.extend(apply_feature_patches(pkg_dir, self.root / "features" / feat, feat))
+
+        validate_staged_package(pkg_dir, pkg_name)
+
+        so_dst = plugin_stage / "plasma/applets" / f"{PACKAGES[pkg_name]['plugin']}.so"
+        so_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(sources["plugin"], so_dst)
+
+        return {
+            "pkg_dir": pkg_dir,
+            "plugin_stage": plugin_stage,
+            "features": list(features),
+            "sources": source_hashes,
+            "source_paths": {k: str(v) for k, v in sources.items()},
+            "changed_files": sorted(set(changed_files)),
+            "output_hash": hash_directory(pkg_dir),
+        }
+
+    def _write_shared_files(self, state: dict) -> None:
+        active_pkgs = [
+            pkg for pkg in PACKAGES if any(f in state["active"] for f in PACKAGES[pkg]["features"])
+        ]
+        plugin_path = ":".join(
+            [str(self.plugin_root / pkg) for pkg in active_pkgs]
+            + state.get("extra_plugins", [])
+            + [state["plugins"]]
+        )
+        self.shared[0].parent.mkdir(parents=True, exist_ok=True)
+        dropin = self.shared[0].with_suffix(".new")
+        remove(dropin)
+        dropin.write_text(
+            "[Service]\n"
+            f"ExecStartPre=-{shlex.quote(str(self.self_exec))} preflight\n"
+            'Environment="QT_PLUGIN_PATH=' + systemd_quote(plugin_path) + '"\n'
+        )
+        dropin.replace(self.shared[0])
+
+        remove(self.shared[1])
+        self.shared[1].parent.mkdir(parents=True, exist_ok=True)
+        launcher_tmp = self.shared[1].with_suffix(".new")
+        launcher_tmp.write_text(
+            "#!/bin/sh\n"
+            f"{shlex.quote(str(self.self_exec))} preflight >/dev/null 2>&1 || true\n"
+            "export QT_PLUGIN_PATH=" + shlex.quote(plugin_path) + "${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}\n"
+            "exec " + shlex.quote(state["shell"]) + ' "$@"\n'
+        )
+        launcher_tmp.chmod(0o755)
+        launcher_tmp.replace(self.shared[1])
+
+    def _save_manifest(self, state: dict) -> None:
+        self.state.mkdir(parents=True, exist_ok=True)
+        clean = {k: v for k, v in state.items() if not k.startswith("_")}
+        tmp = self.state / "manifest.new"
+        tmp.write_text(json.dumps(clean, indent=2) + "\n")
+        tmp.replace(self.manifest)
+
+    def _check_legacy(self) -> None:
+        for old in (
+            self.data / "plasma-icon-tray-install/manifest.json",
+            self.config / "systemd/user/plasma-plasmashell.service.d/icon-tray.conf",
+            self.config / "systemd/user/plasma-plasmashell.service.d/microphone-icon.conf",
+        ):
+            if exists(old):
+                raise ValueError(f"Legacy installation found: {old}. Uninstall it using its original installer first.")
+
+    def _apply_plan(
+        self,
+        state: dict,
+        desired: list[str],
+        rebuild_pkgs: set[str],
+        platform: dict | None,
+        allow_partial_disable: bool = False,
+    ) -> list[str]:
+        warnings: list[str] = []
+        migrating = state.pop("_migrated_from_v1", False)
+        desired_ordered = [f for f in FEATURE_ORDER if f in desired]
+
+        staged_packages: dict[str, dict] = {}
+        disabled: dict[str, dict] = {}
+
+        with tempfile.TemporaryDirectory(prefix="plasma-tweaks-stage-", dir=self.data) as stage_str:
+            stage_root = Path(stage_str)
+            for pkg_name in PACKAGES:
+                pkg_features = [f for f in PACKAGES[pkg_name]["features"] if f in desired_ordered]
+                if not pkg_features or pkg_name not in rebuild_pkgs:
+                    continue
+                assert platform is not None
+                try:
+                    staged_packages[pkg_name] = self._build_package_in_staging(
+                        pkg_name, pkg_features, platform, stage_root
+                    )
+                except Exception as exc:
+                    if not allow_partial_disable:
+                        raise
+                    disabled[pkg_name] = {"features": pkg_features, "reason": str(exc)}
+
             with recovery_directory(self.data) as snapshot:
                 paths = self.targets() + [self.state]
                 for i, path in enumerate(paths):
                     if exists(path):
                         copy(path, snapshot / str(i))
                 try:
-                    if action == "install" and not state["installed"]:
+                    if migrating:
+                        self._finalize_v1_migration_backups()
+                    if desired_ordered and not (self.state / "backup/shared").is_dir():
                         self.backup("shared", self.shared)
-                    for name in selected:
-                        paths_for_feature = self.feature_targets(name)
-                        if action == "install":
-                            if name not in state["installed"]:
-                                self.backup(name, paths_for_feature)
-                                state["installed"].append(name)
-                            for path in paths_for_feature:
-                                remove(path)
-                            copy(self.root / "features" / name / "plasmoid", paths_for_feature[0])
-                            system = "systemtray" if name == "tray" else "taskmanager"
-                            copy(Path(state["plugins"]) / f"plasma/applets/org.kde.plasma.{system}.so",
-                                 paths_for_feature[1] / f"plasma/applets/org.local.{FEATURES[name][1]}.so")
+
+                    new_active: list[str] = []
+                    new_packages: dict[str, dict] = {}
+                    new_disabled: dict[str, dict] = dict(state.get("disabled", {}))
+
+                    for pkg_name, pkg_info in PACKAGES.items():
+                        pkg_features = [f for f in pkg_info["features"] if f in desired_ordered]
+                        pkg_targets = self.package_targets(pkg_name)
+                        if not pkg_features:
+                            if (self.state / "backup" / pkg_name).is_dir():
+                                restored_user = self.restore(pkg_name, pkg_targets)
+                                if restored_user:
+                                    warnings.append(
+                                        f"Restored pre-existing user override for {pkg_info['applet']}; "
+                                        "verify it is compatible with your current Plasma version."
+                                    )
+                            else:
+                                for p in pkg_targets:
+                                    remove(p)
+                            new_disabled.pop(pkg_name, None)
+                        elif pkg_name in disabled:
+                            if (self.state / "backup" / pkg_name).is_dir():
+                                self.restore(pkg_name, pkg_targets)
+                            else:
+                                for p in pkg_targets:
+                                    remove(p)
+                            new_disabled[pkg_name] = disabled[pkg_name]
+                        elif pkg_name in staged_packages:
+                            self.backup(pkg_name, pkg_targets)
+                            for p in pkg_targets:
+                                remove(p)
+                            built = staged_packages[pkg_name]
+                            copy(built["pkg_dir"], pkg_targets[0])
+                            copy(built["plugin_stage"], pkg_targets[1])
+                            new_active.extend(built["features"])
+                            new_packages[pkg_name] = {
+                                "features": built["features"],
+                                "sources": built["sources"],
+                                "source_paths": built["source_paths"],
+                                "changed_files": built["changed_files"],
+                                "output_hash": built["output_hash"],
+                            }
+                            new_disabled.pop(pkg_name, None)
                         else:
-                            self.restore(name, paths_for_feature)
-                            state["installed"].remove(name)
-                    if state["installed"]:
-                        plugin_path = ":".join([str(self.plugin_root / n) for n in FEATURES if n in state["installed"]]
-                                               + state.get("extra_plugins", []) + [state["plugins"]])
-                        self.shared[0].parent.mkdir(parents=True, exist_ok=True)
-                        dropin = self.shared[0].with_suffix(".new")
-                        remove(dropin)
-                        dropin.write_text('[Service]\nEnvironment="QT_PLUGIN_PATH=' + systemd_quote(plugin_path) + '"\n')
-                        dropin.replace(self.shared[0])
-                        remove(self.shared[1])
-                        self.shared[1].parent.mkdir(parents=True, exist_ok=True)
-                        self.shared[1].write_text('#!/bin/sh\nexport QT_PLUGIN_PATH=' + shlex.quote(plugin_path)
-                                                  + '${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}\nexec '
-                                                  + shlex.quote(state["shell"]) + ' "$@"\n')
-                        self.shared[1].chmod(0o755)
-                        temporary_manifest = self.state / "manifest.new"
-                        temporary_manifest.write_text(json.dumps(state, indent=2) + "\n")
-                        temporary_manifest.replace(self.manifest)
+                            if pkg_name in state.get("packages", {}):
+                                new_packages[pkg_name] = state["packages"][pkg_name]
+                            for f in pkg_features:
+                                if f in state.get("active", []):
+                                    new_active.append(f)
+
+                    state["desired"] = desired_ordered
+                    state["active"] = [f for f in FEATURE_ORDER if f in new_active]
+                    state["packages"] = new_packages
+                    state["disabled"] = new_disabled
+
+                    if state["desired"]:
+                        self._write_shared_files(state)
+                        self._save_manifest(state)
                     else:
-                        self.restore("shared", self.shared)
+                        if (self.state / "backup/shared").is_dir():
+                            self.restore("shared", self.shared)
                         remove(self.state)
                 except BaseException:
                     for i, path in enumerate(paths):
                         try:
-                            staged = snapshot / f"restore-{i}"
+                            staged_r = snapshot / f"restore-{i}"
                             if exists(snapshot / str(i)):
-                                copy(snapshot / str(i), staged)
+                                copy(snapshot / str(i), staged_r)
                             remove(path)
-                            if exists(staged):
+                            if exists(staged_r):
                                 path.parent.mkdir(parents=True, exist_ok=True)
-                                staged.replace(path)
+                                staged_r.replace(path)
                         except OSError as rollback_error:
                             print(f"Could not restore {path}: {rollback_error}", file=sys.stderr)
                     raise
-            return True
+        return warnings
 
-    def status(self, names):
+    def change(self, action: str, names: list[str]) -> tuple[bool, list[str]]:
+        with self.locked():
+            state = self.load()
+            desired = list(state["desired"])
+            if action == "install":
+                self._check_legacy()
+                for n in names:
+                    if n not in desired:
+                        desired.append(n)
+                affected_pkgs = {FEATURE_PACKAGE[n] for n in names}
+                platform = discover(self.shared[1], self.data)
+                state.update(
+                    shell=str(platform["shell"]),
+                    plugins=str(platform["plugins"]),
+                    version=platform["version"],
+                )
+                if "extra_plugins" not in state:
+                    state["extra_plugins"] = [
+                        p
+                        for p in os.environ.get("QT_PLUGIN_PATH", "").split(":")
+                        if p and Path(p).is_absolute() and not Path(p).is_relative_to(self.plugin_root)
+                    ]
+            else:
+                removing = [n for n in names if n in desired]
+                if not removing:
+                    return False, []
+                for n in removing:
+                    desired.remove(n)
+                affected_pkgs = {
+                    FEATURE_PACKAGE[n]
+                    for n in removing
+                    if any(f in desired for f in PACKAGES[FEATURE_PACKAGE[n]]["features"])
+                }
+                platform = discover(self.shared[1], self.data) if affected_pkgs else None
+                if platform:
+                    state.update(
+                        shell=str(platform["shell"]),
+                        plugins=str(platform["plugins"]),
+                        version=platform["version"],
+                    )
+                for pkg_name in {FEATURE_PACKAGE[n] for n in removing} - affected_pkgs:
+                    if (self.state / "backup" / pkg_name).is_dir():
+                        pass
+                    elif pkg_name in state.get("packages", {}) or any(
+                        exists(p) for p in self.package_targets(pkg_name)
+                    ):
+                        if pkg_name not in state.get("disabled", {}):
+                            raise ValueError(f"Missing rollback snapshot: {self.state / 'backup' / pkg_name}")
+
+            warnings = self._apply_plan(state, desired, affected_pkgs, platform, allow_partial_disable=False)
+            return True, warnings
+
+    def rebase(self, allow_partial_disable: bool = False) -> tuple[bool, dict]:
+        with self.locked():
+            state = self.load()
+            desired = list(state["desired"])
+            if not desired:
+                return False, {"rebuilt": [], "disabled": {}}
+            platform = discover(self.shared[1], self.data)
+            state.update(
+                shell=str(platform["shell"]),
+                plugins=str(platform["plugins"]),
+                version=platform["version"],
+            )
+            if "extra_plugins" not in state:
+                state["extra_plugins"] = [
+                    p
+                    for p in os.environ.get("QT_PLUGIN_PATH", "").split(":")
+                    if p and Path(p).is_absolute() and not Path(p).is_relative_to(self.plugin_root)
+                ]
+            rebuild_pkgs = {FEATURE_PACKAGE[f] for f in desired}
+            self._apply_plan(
+                state,
+                desired,
+                rebuild_pkgs,
+                platform,
+                allow_partial_disable=allow_partial_disable,
+            )
+            updated = self.load()
+            return True, {
+                "rebuilt": [p for p in updated.get("packages", {})],
+                "disabled": updated.get("disabled", {}),
+            }
+
+    def preflight(self) -> dict:
+        with self.locked():
+            if not self.manifest.exists():
+                return {"action": "noop"}
+            state = self.load()
+            desired = list(state["desired"])
+            if not desired:
+                return {"action": "noop"}
+            platform = discover(self.shared[1], self.data)
+            stale_pkgs: set[str] = set()
+            for pkg_name in {FEATURE_PACKAGE[f] for f in desired}:
+                pkg_state = state.get("packages", {}).get(pkg_name)
+                if not pkg_state:
+                    stale_pkgs.add(pkg_name)
+                    continue
+                try:
+                    sources = self._package_sources(pkg_name, platform)
+                    current_hashes = {k: sha256_file(p) for k, p in sources.items()}
+                except ValueError:
+                    stale_pkgs.add(pkg_name)
+                    continue
+                if current_hashes != pkg_state.get("sources"):
+                    stale_pkgs.add(pkg_name)
+                    continue
+                targets = self.package_targets(pkg_name)
+                so_file = targets[1] / "plasma/applets" / f"{PACKAGES[pkg_name]['plugin']}.so"
+                if not (targets[0] / "metadata.json").is_file() or not so_file.is_file():
+                    stale_pkgs.add(pkg_name)
+
+            if not stale_pkgs:
+                return {"action": "ok"}
+
+            state.update(
+                shell=str(platform["shell"]),
+                plugins=str(platform["plugins"]),
+                version=platform["version"],
+            )
+            self._apply_plan(state, desired, stale_pkgs, platform, allow_partial_disable=True)
+            updated = self.load()
+            return {
+                "action": "rebuilt",
+                "stale": sorted(stale_pkgs),
+                "disabled": updated.get("disabled", {}),
+            }
+
+    def status(self, names: list[str]) -> None:
         with self.locked():
             state = self.load()
             for name in names:
-                targets = self.feature_targets(name)
-                if name in state["installed"]:
-                    _, plugin = FEATURES[name]
-                    complete = (targets[0] / "metadata.json").is_file() and (targets[1] / f"plasma/applets/org.local.{plugin}.so").is_file() and all(p.is_file() for p in self.shared)
-                    label = "installed" if complete else "incomplete (reinstall to repair)"
+                pkg = FEATURE_PACKAGE[name]
+                targets = self.package_targets(pkg)
+                plugin = PACKAGES[pkg]["plugin"]
+                if pkg in state.get("disabled", {}) and name in state.get("disabled", {}).get(pkg, {}).get("features", []):
+                    reason = state["disabled"][pkg].get("reason", "incompatible")
+                    label = f"disabled ({reason})"
+                elif name in state["active"]:
+                    complete = (
+                        (targets[0] / "metadata.json").is_file()
+                        and (targets[1] / "plasma/applets" / f"{plugin}.so").is_file()
+                        and all(p.is_file() for p in self.shared)
+                    )
+                    label = "active" if complete else "incomplete (run rebase to repair)"
+                elif name in state["desired"]:
+                    label = "desired (not active; run rebase)"
                 else:
                     label = "not managed" if any(exists(p) for p in targets) else "not installed"
                 print(f"{name}: {label}")
 
+    def doctor(self) -> dict:
+        report: dict = {"ok": True, "issues": []}
+        try:
+            platform = discover(self.shared[1], self.data)
+            report["plasma_version"] = platform["version"]
+            report["shell"] = str(platform["shell"])
+            report["plugins_dir"] = str(platform["plugins"])
+            report["icontasks_metadata"] = str(platform["icontasks_metadata"]) if platform["icontasks_metadata"] else None
+        except Exception as exc:
+            report["ok"] = False
+            report["issues"].append(f"Platform discovery failed: {exc}")
+            platform = None
 
-def main():
+        ext_kind, ext_detail = detect_extractor(self.root)
+        report["extractor"] = f"{ext_kind} ({ext_detail})" if ext_detail else ext_kind
+        if ext_kind == "none":
+            report["ok"] = False
+            report["issues"].append("No Qt 6 resource extractor available.")
+
+        try:
+            state = self.load()
+        except Exception as exc:
+            report["ok"] = False
+            report["issues"].append(str(exc))
+            return report
+
+        report["desired"] = state["desired"]
+        report["active"] = state["active"]
+        report["disabled"] = state.get("disabled", {})
+
+        source_status: dict[str, str] = {}
+        if platform:
+            for pkg_name in PACKAGES:
+                try:
+                    sources = self._package_sources(pkg_name, platform)
+                    hashes = {k: sha256_file(p) for k, p in sources.items()}
+                    recorded = state.get("packages", {}).get(pkg_name, {}).get("sources")
+                    if recorded is None:
+                        source_status[pkg_name] = "not installed"
+                    elif recorded == hashes:
+                        source_status[pkg_name] = "matches"
+                    else:
+                        source_status[pkg_name] = "changed (run rebase)"
+                        report["issues"].append(f"Source artifacts changed for {pkg_name}; run rebase.")
+                except Exception as exc:
+                    source_status[pkg_name] = f"missing ({exc})"
+        report["sources"] = source_status
+
+        dropin_dir = self.shared[0].parent
+        other_dropins = []
+        if dropin_dir.is_dir():
+            other_dropins = sorted(
+                p.name for p in dropin_dir.iterdir() if p.name != self.shared[0].name
+            )
+        report["other_dropins"] = other_dropins
+
+        path_entries = [Path(p).resolve() for p in os.environ.get("PATH", "").split(":") if p]
+        local_bin = (self.home / ".local/bin").resolve()
+        usr_bin = Path("/usr/bin").resolve()
+        local_first = (
+            local_bin in path_entries
+            and (usr_bin not in path_entries or path_entries.index(local_bin) < path_entries.index(usr_bin))
+        )
+        report["pre_start"] = {
+            "systemd_dropin": self.shared[0].is_file(),
+            "local_bin_first_in_path": local_first,
+        }
+        if not self.shared[0].is_file() and not local_first:
+            report["issues"].append("No active pre-start hook detected; uninstall before KDE updates.")
+
+        return report
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("install", "uninstall", "status"))
-    parser.add_argument("features", nargs="*", metavar="FEATURE", help="tray, microphone, or all (default)")
-    parser.add_argument("--restart", action="store_true", help="Restart plasma-plasmashell.service after changes (briefly hides the panel).")
+    parser.add_argument("action", choices=("install", "uninstall", "status", "rebase", "doctor", "preflight"))
+    parser.add_argument("features", nargs="*", metavar="FEATURE", help="tray, microphone, app-volume, or all (default)")
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help="Restart plasma-plasmashell.service after changes (briefly hides the panel).",
+    )
     args = parser.parse_args()
-    names = args.features or ["all"]
-    if any(n not in (*FEATURES, "all") for n in names) or ("all" in names and len(names) != 1):
-        parser.error("Choose tray, microphone, both names, or all on its own.")
-    names = list(FEATURES) if names == ["all"] else list(dict.fromkeys(names))
+
     try:
         home = Path.home()
-        manager = Manager(ROOT, home, Path(os.environ.get("XDG_DATA_HOME") or home / ".local/share"),
-                          Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config"))
-        if args.action == "status":
-            manager.status(names)
+        manager = Manager(
+            ROOT,
+            home,
+            Path(os.environ.get("XDG_DATA_HOME") or home / ".local/share"),
+            Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config"),
+        )
+
+        if args.action == "doctor":
+            if args.features:
+                parser.error("doctor does not accept feature arguments.")
+            report = manager.doctor()
+            print(json.dumps(report, indent=2))
+            return 0 if report["ok"] else 1
+
+        if args.action == "preflight":
+            if args.features:
+                parser.error("preflight does not accept feature arguments.")
+            try:
+                manager.preflight()
+            except Exception as exc:
+                print(f"plasma-tweaks preflight warning: {exc}", file=sys.stderr)
             return 0
-        if os.geteuid() == 0:
-            raise ValueError("Run as your desktop user, without sudo.")
-        if not manager.change(args.action, names):
-            print("Nothing to change.")
-            return 0
-        print(f"{args.action}: {', '.join(names)}. Files updated.")
+
+        if args.action == "rebase":
+            if args.features:
+                parser.error("rebase does not accept feature arguments.")
+            if os.geteuid() == 0:
+                raise ValueError("Run as your desktop user, without sudo.")
+            changed, info = manager.rebase()
+            if not changed:
+                print("Nothing to rebase.")
+                return 0
+            print(f"rebase: {', '.join(info['rebuilt'])}. Files updated.")
+        else:
+            names = args.features or ["all"]
+            if any(n not in (*FEATURE_ORDER, "all") for n in names) or ("all" in names and len(names) != 1):
+                parser.error("Choose tray, microphone, app-volume, any combination, or all on its own.")
+            names = list(FEATURE_ORDER) if names == ["all"] else list(dict.fromkeys(names))
+
+            if args.action == "status":
+                manager.status(names)
+                return 0
+            if os.geteuid() == 0:
+                raise ValueError("Run as your desktop user, without sudo.")
+            changed, warnings = manager.change(args.action, names)
+            for w in warnings:
+                print(f"Warning: {w}", file=sys.stderr)
+            if not changed:
+                print("Nothing to change.")
+                return 0
+            print(f"{args.action}: {', '.join(names)}. Files updated.")
+
         if args.restart:
             try:
                 subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
@@ -265,7 +981,10 @@ def main():
                 print(f"Files saved, but Plasma restart failed: {error}. Log out and back in.", file=sys.stderr)
                 return 1
         else:
-            print("Log out and back in to apply, or pass --restart. Keep ~/.local/bin first in PATH for manual plasmashell restarts.")
+            print(
+                "Log out and back in to apply, or pass --restart. "
+                "Keep ~/.local/bin first in PATH for manual plasmashell restarts."
+            )
         return 0
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         print(f"Error: {error}", file=sys.stderr)

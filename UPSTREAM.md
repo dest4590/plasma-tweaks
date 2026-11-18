@@ -1,12 +1,16 @@
-# Source snapshots
+# Upstream sources and extraction
 
-- Tray: https://github.com/dest4590/plasma-icon-tray at `83f20be949cd3b443eb55291fa7f2d5205893701`.
-- Microphone: https://github.com/dest4590/plasma-microphone-icon at `25a6a45ef9d4534dd807bd6eecf3a492c4b85a72`.
+`plasma-tweaks` does not vendor KDE widget copies. At install/rebase time it extracts QML and configuration files directly from the system Plasma applet plugins:
 
-Both plasmoid directories are copied unchanged. Original KDE copyright and SPDX notices are preserved.
+- `tray` (`org.kde.plasma.systemtray`): extracted from `plasma/applets/org.kde.plasma.systemtray.so` (`:/qt/qml/plasma/applet/org/kde/plasma/systemtray/`) and `QPluginLoader::metaData()`.
+- `microphone` & `app-volume` (`org.kde.plasma.icontasks`): QML/config extracted from `plasma/applets/org.kde.plasma.taskmanager.so` (`:/qt/qml/plasma/applet/org/kde/plasma/taskmanager/`), paired with `plasma/plasmoids/org.kde.plasma.icontasks/metadata.json`.
 
-The tray source was extracted from Plasma Workspace 6.8.2 Qt resources and updated for the BackgroundAppItem.qml change in 6.8.3. Upstream: https://invent.kde.org/plasma/plasma-workspace, applets/systemtray.
+## Verified builds
 
-The microphone source customizes Icons-only Task Manager from https://invent.kde.org/plasma/plasma-desktop, applets/taskmanager. Its source repository does not identify the exact KDE snapshot version. The installer's version gate does not establish UI compatibility; verify on a desktop before relying on it.
+- **KDE Plasma 6.8.3** (Qt 6.11.2, Fedora/CachyOS-style `/usr/lib64/qt6/plugins`):
+  - Resource extraction verified from `/usr/lib64/qt6/plugins/plasma/applets/org.kde.plasma.systemtray.so` (18 files + plugin metadata) and `org.kde.plasma.taskmanager.so` (24 files + `/usr/share/plasma/plasmoids/org.kde.plasma.icontasks/metadata.json`).
+  - All feature patches (`tray`, `microphone`, `app-volume`, and `microphone + app-volume`) verified to apply cleanly with exact single-match anchors.
 
-Before adding a Plasma version, compare all vendored files with its embedded resources and check the plugin/QML interface. Verify tray popup lifecycle and task-manager microphone activity/mute behavior on a desktop. Do not widen the version gate based only on the Python tests.
+## Upstream conflict notes
+
+- Plasma 6.8.3 added `wheelEnabled === 3` (`AdjustVolume`) in `taskmanager` `MouseHandler.qml` / `ConfigBehavior.qml` / `main.xml`. `app-volume` extends the existing `WheelHandler` in `MouseHandler.qml` rather than adding a competing handler, preserving normal task-wheel behavior when no output streams are present or the modifier does not match, shifting multiple streams by equal percentage points, and keeping mute state unchanged.

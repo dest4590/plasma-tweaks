@@ -4,17 +4,34 @@
 
 # plasma-tweaks
 
-Two KDE Plasma customizations with one CLI. Python 3.10+, standard library only.
+Three KDE Plasma customizations with one CLI. Python 3.10+, standard library only.
+
+Instead of bundling static copies of KDE widgets, `plasma-tweaks` extracts the QML/config resources from your installed Plasma plugins at install/rebase time, applies targeted patches, validates the staged package, and publishes local overrides.
 
 - `tray`: compact Windows-style system tray, small icons, names on hover, and an expand arrow on the left.
 - `microphone`: microphone activity indicators and mute controls in Icons-only Task Manager.
+- `app-volume`: mouse wheel / touchpad volume control (5 percentage point steps, 0–100%, preserves mute state) over running tasks with output audio streams in Icons-only Task Manager, with optional `Alt` modifier and range display in tooltips.
 
 ![tray preview](features/tray/preview.png)
 
 ![microphone preview](features/microphone/preview.png)
 ![microphone preview](features/microphone/preview2.png)
 
+## Requirements
+
+- KDE Plasma 6 with `plasmashell` and `qtpaths6` (or `/usr/lib{,64}/qt6/bin/qtpaths`).
+- One Qt 6 resource extractor backend (runs in a separate process loading only the trusted system `.so` plugin):
+  - `PySide6` or `PyQt6` Python bindings (`python3-pyside6` / `python3-pyqt6`), **or**
+  - The optional C++ helper in [helper/](helper/):
+    ```sh
+    cmake -S helper -B helper/build
+    cmake --build helper/build
+    ```
+    Requires `Qt6Core` development headers and a C++17 compiler.
+
 ## Install
+
+`all` installs all three features (`tray`, `microphone`, `app-volume`):
 
 ```sh
 git clone https://github.com/dest4590/plasma-tweaks.git
@@ -22,43 +39,46 @@ cd plasma-tweaks
 ./plasma-tweaks install all --restart
 ```
 
-Or install one feature:
+Or install individual features:
 
 ```sh
 ./plasma-tweaks install tray --restart
-./plasma-tweaks install microphone --restart
+./plasma-tweaks install microphone app-volume --restart
 ./plasma-tweaks status
+./plasma-tweaks doctor
 ```
 
-Run as your desktop user, without sudo. `--restart` briefly restarts the panel through the `plasma-plasmashell.service` user service. Without it, files are installed but you must log out and back in. Keep the checkout: the CLI uses its bundled `features/` directory. You can symlink the executable into a directory in your PATH.
+Run as your desktop user, without `sudo`. `--restart` restarts `plasma-plasmashell.service` (briefly hides the panel). Without it, files are staged and published, and take effect on next login.
 
-The installer supports Plasma **6.8.2 and 6.8.3** only. The tray snapshot was tested on Wayland/CachyOS upstream; the combined installer and microphone UI still need a desktop smoke test. These packages use private Plasma QML APIs, so other versions are blocked. Qt 6 `qtpaths6` (or `/usr/lib{,64}/qt6/bin/qtpaths`) and the system Plasma applet plugins must be installed. No binary plugins are downloaded: the CLI copies them from your machine.
+`microphone` and `app-volume` both customize `org.kde.plasma.icontasks` and are composed into a single local override. Uninstalling one rebuilds `org.kde.plasma.icontasks` with only the remaining feature.
 
-## Remove or update
+## Update, Rebase, and Remove
 
 ```sh
-./plasma-tweaks uninstall tray --restart
+./plasma-tweaks rebase --restart
 ./plasma-tweaks uninstall microphone --restart
 ./plasma-tweaks uninstall all --restart
 ```
 
-Removing one feature keeps the other working. Uninstall restores the files saved before the first installation, including an existing local launcher. Reinstalling refreshes QML and plugins without replacing that original backup.
+- `rebase` rebuilds your `desired` features from the current system Plasma plugins (never enables new features).
+- `doctor` is read-only: it reports detected Plasma/Qt6 paths, extractor backend, source artifact SHA-256 status, `desired`/`active`/`disabled` state, other systemd drop-ins, and pre-start hook coverage.
+- `uninstall` restores the pre-installation backup (including any pre-existing user override or launcher symlink). If a pre-existing user override is restored, `plasma-tweaks` warns you to check its compatibility with your current Plasma version.
 
-Uninstall **before upgrading Plasma**. Reinstall only after checking compatibility with the new version.
+## How loading and update protection work
 
-## What changes
+System Plasma applets (`org.kde.plasma.systemtray.so` and `org.kde.plasma.taskmanager.so`) embed upstream QML in Qt resources (`:/qt/qml/plasma/applet/...`). To load the patched local QML from `$XDG_DATA_HOME/plasma/plasmoids/` instead of the embedded resources while still using the system C++ applet code, `plasma-tweaks` sets `X-Plasma-RootPath` to `org.local.icontray` / `org.local.taskmanager` and copies the system `.so` into `$XDG_DATA_HOME/plasma-tweaks-plugins/<pkg>/plasma/applets/org.local.<name>.so` exposed via `QT_PLUGIN_PATH`.
 
-The CLI overrides `org.kde.plasma.systemtray` and/or `org.kde.plasma.icontasks` in `$XDG_DATA_HOME/plasma/plasmoids` (default `~/.local/share`). It never edits your panel layout or system files. The microphone feature applies to Icons-only Task Manager, not the regular Task Manager.
+Both `$XDG_CONFIG_HOME/systemd/user/plasma-plasmashell.service.d/zz-plasma-tweaks.conf` and `~/.local/bin/plasmashell` invoke `plasma-tweaks preflight` before `plasmashell` starts:
 
-Both features share one Qt plugin path, a systemd drop-in at `$XDG_CONFIG_HOME/systemd/user/plasma-plasmashell.service.d/zz-plasma-tweaks.conf`, and `~/.local/bin/plasmashell`. Keep `~/.local/bin` before `/usr/bin` in PATH for manual `plasmashell --replace` calls. Snapshots live in `$XDG_DATA_HOME/plasma-tweaks`. Do not delete them before uninstalling.
+- If source plugin/metadata SHA-256 hashes are unchanged, `preflight` exits immediately.
+- If KDE was updated, `preflight` attempts to rebuild `desired` features from the new resources.
+- If a package is incompatible with the new KDE resources, `preflight` disables only the affected override so the stock system widget is used and `plasmashell` still starts normally.
 
-Caught installation errors restore the pre-command files. This is not protection against power loss or filesystem failure. Avoid changing HOME/XDG paths between installation and removal.
+If your session does not use `plasma-plasmashell.service` and `~/.local/bin` is not ahead of `/usr/bin` in `PATH`, uninstall before upgrading Plasma and check `./plasma-tweaks doctor`.
 
-## Moving from the old repositories
+## App-volume notes
 
-Uninstall both old overrides using their original installers before running this CLI. The CLI refuses known legacy drop-ins instead of silently losing their backups. Do not run both sets of installers together.
-
-The old microphone installer has a bug in `uninstall()`: it uses an undefined `qt_plugin_path` after removing its files. If it ends with that NameError, its file removal has already happened; log out and back in before proceeding. It did not keep backups of previous local task-manager files.
+Plasma 6.8.3 introduced an upstream `AdjustVolume` option in `wheelEnabled`, which replaces task switching globally, scales deltas by `stream.volume / loudest` (leaving 0% streams at 0%), and auto-mutes at 0%. `app-volume` extends `MouseHandler.qml` and `ToolTipInstance.qml` instead of adding a second `WheelHandler`: when `appVolumeEnabled` is enabled (default) and the configured modifier (`None` by default, or `Alt`) matches over a task with output streams, scrolling adjusts each stream by 5 percentage points without changing mute state or switching tasks; otherwise normal `wheelEnabled` behavior applies.
 
 ## Development
 
@@ -66,8 +86,6 @@ The old microphone installer has a bug in `uninstall()`: it uses an undefined `q
 python3 -m unittest discover -s tests -v
 ```
 
-Tests exercise file installation and restoration in temporary directories with mocked platform discovery. They do not launch Plasma or validate the QML UI.
+## Licensing
 
-## Sources and licensing
-
-Bundled QML comes from [plasma-icon-tray](https://github.com/dest4590/plasma-icon-tray) and [plasma-microphone-icon](https://github.com/dest4590/plasma-microphone-icon), based on KDE Plasma. Copyright/SPDX headers are preserved. See [UPSTREAM.md](UPSTREAM.md) and `LICENSES/`. The CLI is GPL-2.0-or-later; bundled files retain their marked licenses.
+Original KDE copyright and SPDX notices are preserved. See [UPSTREAM.md](UPSTREAM.md) and `LICENSES/`. The CLI, helper, and patch/JS additions are GPL-2.0-or-later.
