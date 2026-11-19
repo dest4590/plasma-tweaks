@@ -151,6 +151,10 @@
         ],
         "text": [
           "    padding: Kirigami.Units.smallSpacing",
+          "    // PlasmaComponents ScrollView reserves scrollbar width on the right even when the bar is hidden",
+          "    leftPadding: Kirigami.Units.smallSpacing",
+          "    rightPadding: Kirigami.Units.smallSpacing",
+          "    bottomPadding: Kirigami.Units.smallSpacing",
           "    QQC2.ScrollBar.vertical.policy: QQC2.ScrollBar.AlwaysOff",
           "    QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff",
           ""
