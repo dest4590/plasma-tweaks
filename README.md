@@ -4,14 +4,16 @@
 
 # plasma-tweaks
 
-Two KDE Plasma customizations with one CLI. Python 3.10+, standard library only.
+KDE Plasma customizations with one CLI.
 
 Instead of bundling static copies of KDE widgets, `plasma-tweaks` extracts the QML/config resources from your installed Plasma plugins at install/rebase time, applies targeted patches, validates the staged package, and publishes local overrides.
 
 - `tray`: compact Windows-style system tray, small icons, names on hover, and an expand arrow on the left.
+- `tray-hover` (optional, install separately): opens the tray popup when the pointer is over the expand arrow and closes it 400 ms after the pointer leaves, so you can move onto the icon box.
 - `microphone`: microphone activity indicators and mute controls in Icons-only Task Manager.
 
 ![tray preview](features/tray/preview.png)
+![tray-hover preview](features/tray-hover/preview.mp4)
 
 ![microphone preview](features/microphone/preview.png)
 ![microphone preview](features/microphone/preview2.png)
@@ -30,7 +32,7 @@ Instead of bundling static copies of KDE widgets, `plasma-tweaks` extracts the Q
 
 ## Install
 
-`all` installs both features (`tray`, `microphone`):
+`all` installs `tray` and `microphone` (opt-in features such as `tray-hover` are not included):
 
 ```sh
 git clone https://github.com/dest4590/plasma-tweaks.git
@@ -42,6 +44,7 @@ Or install individual features:
 
 ```sh
 ./plasma-tweaks install tray --restart
+./plasma-tweaks install tray-hover --restart
 ./plasma-tweaks install microphone --restart
 ./plasma-tweaks status
 ./plasma-tweaks doctor

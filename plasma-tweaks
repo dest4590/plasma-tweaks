@@ -21,14 +21,14 @@ if str(ROOT) not in sys.path:
 
 import qml_validation
 
-FEATURE_ORDER = ("tray", "microphone")
+FEATURE_ORDER = ("tray", "tray-hover", "microphone")
 PACKAGES = {
     "tray": {
         "applet": "org.kde.plasma.systemtray",
         "plugin": "org.local.icontray",
         "system_plugin": "org.kde.plasma.systemtray.so",
         "resource_prefix": ":/qt/qml/plasma/applet/org/kde/plasma/systemtray/",
-        "features": ("tray",),
+        "features": ("tray", "tray-hover"),
     },
     "icontasks": {
         "applet": "org.kde.plasma.icontasks",
@@ -40,6 +40,7 @@ PACKAGES = {
 }
 FEATURE_PACKAGE = {
     "tray": "tray",
+    "tray-hover": "tray",
     "microphone": "icontasks",
 }
 
@@ -229,6 +230,18 @@ def extract_resources(root: Path, plugin_path: Path, prefix: str, out_dir: Path)
         raise ValueError(f"Resource extraction failed for {plugin_path.name}: {err}")
 
 
+PATCH_OPS = {
+    "replace": lambda match, added: added,
+    "insert_after": lambda match, added: match + added,
+    "insert_before": lambda match, added: added + match,
+}
+
+
+def patch_text(value: str | list[str]) -> str:
+    """Patch fields may be a string or a list of lines joined with newlines (a trailing "" adds a final newline)."""
+    return value if isinstance(value, str) else "\n".join(value)
+
+
 def apply_feature_patches(pkg_dir: Path, feature_dir: Path, feature_name: str) -> list[str]:
     spec_path = feature_dir / "patches.json"
     if not spec_path.is_file():
@@ -262,32 +275,14 @@ def apply_feature_patches(pkg_dir: Path, feature_dir: Path, feature_name: str) -
         text = target.read_text()
         for idx, op in enumerate(ops):
             kind = op["op"]
-            if kind == "replace":
-                old = op["old"]
-                count = text.count(old)
-                if count != 1:
-                    raise ValueError(
-                        f"[{feature_name}] {rel} op #{idx} (replace): expected 1 match, found {count}"
-                    )
-                text = text.replace(old, op["new"], 1)
-            elif kind == "insert_after":
-                anchor = op["anchor"]
-                count = text.count(anchor)
-                if count != 1:
-                    raise ValueError(
-                        f"[{feature_name}] {rel} op #{idx} (insert_after): expected 1 match, found {count}"
-                    )
-                text = text.replace(anchor, anchor + op["text"], 1)
-            elif kind == "insert_before":
-                anchor = op["anchor"]
-                count = text.count(anchor)
-                if count != 1:
-                    raise ValueError(
-                        f"[{feature_name}] {rel} op #{idx} (insert_before): expected 1 match, found {count}"
-                    )
-                text = text.replace(anchor, op["text"] + anchor, 1)
-            else:
+            if kind not in PATCH_OPS:
                 raise ValueError(f"[{feature_name}] {rel} op #{idx}: unknown op {kind!r}")
+            match = patch_text(op["old" if kind == "replace" else "anchor"])
+            count = text.count(match)
+            if count != 1:
+                raise ValueError(f"[{feature_name}] {rel} op #{idx} ({kind}): expected 1 match, found {count}")
+            added = patch_text(op["new" if kind == "replace" else "text"])
+            text = text.replace(match, PATCH_OPS[kind](match, added), 1)
         target.write_text(text)
         if rel not in changed_files:
             changed_files.append(rel)
@@ -967,7 +962,7 @@ class Manager:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("install", "uninstall", "status", "rebase", "doctor", "preflight"))
-    parser.add_argument("features", nargs="*", metavar="FEATURE", help="tray, microphone, or all (default)")
+    parser.add_argument("features", nargs="*", metavar="FEATURE", help="tray, tray-hover, microphone, or all (default)")
     parser.add_argument(
         "--restart",
         action="store_true",
@@ -1013,8 +1008,8 @@ def main() -> int:
         else:
             names = args.features or ["all"]
             if any(n not in (*FEATURE_ORDER, "all") for n in names) or ("all" in names and len(names) != 1):
-                parser.error("Choose tray, microphone, any combination, or all on its own.")
-            names = list(FEATURE_ORDER) if names == ["all"] else list(dict.fromkeys(names))
+                parser.error("Choose tray, tray-hover, microphone, any combination, or all on its own.")
+            names = [f for f in FEATURE_ORDER if f != "tray-hover"] if names == ["all"] else list(dict.fromkeys(names))
 
             if args.action == "status":
                 manager.status(names)

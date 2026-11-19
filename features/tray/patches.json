@@ -24,7 +24,12 @@
       },
       {
         "op": "replace",
-        "old": "        return PlasmaCore.Types.RightEdge;\n    } else {\n        return Plasmoid.location;\n    }",
+        "old": [
+          "        return PlasmaCore.Types.RightEdge;",
+          "    } else {",
+          "        return Plasmoid.location;",
+          "    }"
+        ],
         "new": ""
       },
       {
@@ -58,13 +63,30 @@
     "contents/ui/ExpandedRepresentation.qml": [
       {
         "op": "replace",
-        "old": "    Layout.minimumWidth: Kirigami.Units.gridUnit * 24\n    Layout.minimumHeight: Kirigami.Units.gridUnit * 24",
-        "new": "    readonly property int iconGridWidth: hiddenLayout.columns * hiddenLayout.cellWidth + Kirigami.Units.smallSpacing * 2\n    readonly property int iconGridHeight: Math.max(1, Math.ceil(hiddenLayout.count / hiddenLayout.columns)) * hiddenLayout.cellHeight + Kirigami.Units.smallSpacing * 2\n    implicitWidth: systemTrayState.activeApplet ? Kirigami.Units.gridUnit * 24 : iconGridWidth\n    implicitHeight: systemTrayState.activeApplet ? Kirigami.Units.gridUnit * 24 : iconGridHeight\n    Layout.minimumWidth: implicitWidth\n    Layout.preferredWidth: implicitWidth\n    Layout.maximumWidth: systemTrayState.activeApplet ? Infinity : iconGridWidth\n    Layout.minimumHeight: implicitHeight\n    Layout.preferredHeight: implicitHeight\n    Layout.maximumHeight: systemTrayState.activeApplet ? Infinity : iconGridHeight"
+        "old": [
+          "    Layout.minimumWidth: Kirigami.Units.gridUnit * 24",
+          "    Layout.minimumHeight: Kirigami.Units.gridUnit * 24"
+        ],
+        "new": [
+          "    readonly property int iconGridWidth: hiddenLayout.columns * hiddenLayout.cellWidth + Kirigami.Units.smallSpacing * 2",
+          "    readonly property int iconGridHeight: Math.max(1, Math.ceil(hiddenLayout.count / hiddenLayout.columns)) * hiddenLayout.cellHeight + Kirigami.Units.smallSpacing * 2",
+          "    implicitWidth: systemTrayState.activeApplet ? Kirigami.Units.gridUnit * 24 : iconGridWidth",
+          "    implicitHeight: systemTrayState.activeApplet ? Kirigami.Units.gridUnit * 24 : iconGridHeight",
+          "    Layout.minimumWidth: implicitWidth",
+          "    Layout.preferredWidth: implicitWidth",
+          "    Layout.maximumWidth: systemTrayState.activeApplet ? Infinity : iconGridWidth",
+          "    Layout.minimumHeight: implicitHeight",
+          "    Layout.preferredHeight: implicitHeight",
+          "    Layout.maximumHeight: systemTrayState.activeApplet ? Infinity : iconGridHeight"
+        ]
       },
       {
         "op": "replace",
         "old": "        height: trayHeading.height + bottomPadding + container.headingHeight",
-        "new": "        visible: !!systemTrayState.activeApplet\n        height: visible ? trayHeading.height + bottomPadding + container.headingHeight : 0"
+        "new": [
+          "        visible: !!systemTrayState.activeApplet",
+          "        height: visible ? trayHeading.height + bottomPadding + container.headingHeight : 0"
+        ]
       },
       {
         "op": "replace",
@@ -73,30 +95,66 @@
       },
       {
         "op": "replace",
-        "old": "        RowLayout {\n            id: trayHeading",
-        "new": "        RowLayout {\n            id: trayHeading\n            visible: !!systemTrayState.activeApplet"
+        "old": [
+          "        RowLayout {",
+          "            id: trayHeading"
+        ],
+        "new": [
+          "        RowLayout {",
+          "            id: trayHeading",
+          "            visible: !!systemTrayState.activeApplet"
+        ]
       },
       {
         "op": "replace",
-        "old": "                level: 1\n                text: systemTrayState.activeApplet",
-        "new": "                level: 1\n                visible: !!systemTrayState.activeApplet\n                text: systemTrayState.activeApplet"
+        "old": [
+          "                level: 1",
+          "                text: systemTrayState.activeApplet"
+        ],
+        "new": [
+          "                level: 1",
+          "                visible: !!systemTrayState.activeApplet",
+          "                text: systemTrayState.activeApplet"
+        ]
       },
       {
         "op": "replace",
-        "old": "            Layout.fillHeight: true\n            Layout.topMargin: Kirigami.Units.smallSpacing\n            visible: !systemTrayState.activeApplet",
-        "new": "            Layout.fillHeight: true\n            Layout.topMargin: 0\n            visible: !systemTrayState.activeApplet"
+        "old": [
+          "            Layout.fillHeight: true",
+          "            Layout.topMargin: Kirigami.Units.smallSpacing",
+          "            visible: !systemTrayState.activeApplet"
+        ],
+        "new": [
+          "            Layout.fillHeight: true",
+          "            Layout.topMargin: 0",
+          "            visible: !systemTrayState.activeApplet"
+        ]
       }
     ],
     "contents/ui/HiddenItemsView.qml": [
       {
         "op": "insert_after",
-        "anchor": "import QtQuick\n",
-        "text": "import QtQuick.Controls as QQC2\n"
+        "anchor": [
+          "import QtQuick",
+          ""
+        ],
+        "text": [
+          "import QtQuick.Controls as QQC2",
+          ""
+        ]
       },
       {
         "op": "insert_after",
-        "anchor": "    background: null\n",
-        "text": "    padding: Kirigami.Units.smallSpacing\n    QQC2.ScrollBar.vertical.policy: QQC2.ScrollBar.AlwaysOff\n    QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff\n"
+        "anchor": [
+          "    background: null",
+          ""
+        ],
+        "text": [
+          "    padding: Kirigami.Units.smallSpacing",
+          "    QQC2.ScrollBar.vertical.policy: QQC2.ScrollBar.AlwaysOff",
+          "    QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff",
+          ""
+        ]
       },
       {
         "op": "replace",
@@ -116,7 +174,10 @@
       {
         "op": "replace",
         "old": "        currentIndex: -1",
-        "new": "        interactive: false\n        currentIndex: -1"
+        "new": [
+          "        interactive: false",
+          "        currentIndex: -1"
+        ]
       },
       {
         "op": "replace",
@@ -127,13 +188,25 @@
     "contents/ui/main.qml": [
       {
         "op": "replace",
-        "old": "                Layout.row: root.vertical && root.reverseLayout ? 1 : 0 // Explicitly define grid coordinates\n                Layout.column: 0                                        // to prevent overlapping",
-        "new": "                Layout.row: root.vertical && root.reverseLayout ? 1 : 0 // Explicitly define grid coordinates\n                Layout.column: root.vertical ? 0 : 1                     // icons follow the expand arrow"
+        "old": [
+          "                Layout.row: root.vertical && root.reverseLayout ? 1 : 0 // Explicitly define grid coordinates",
+          "                Layout.column: 0                                        // to prevent overlapping"
+        ],
+        "new": [
+          "                Layout.row: root.vertical && root.reverseLayout ? 1 : 0 // Explicitly define grid coordinates",
+          "                Layout.column: root.vertical ? 0 : 1                     // icons follow the expand arrow"
+        ]
       },
       {
         "op": "replace",
-        "old": "                Layout.row: root.vertical && !root.reverseLayout ? 1 : 0 // Explicitly define grid coordinates\n                Layout.column: root.vertical ? 0 : 1                     // to prevent overlapping",
-        "new": "                Layout.row: root.vertical && !root.reverseLayout ? 1 : 0 // Explicitly define grid coordinates\n                Layout.column: 0                                        // expand arrow precedes the icons"
+        "old": [
+          "                Layout.row: root.vertical && !root.reverseLayout ? 1 : 0 // Explicitly define grid coordinates",
+          "                Layout.column: root.vertical ? 0 : 1                     // to prevent overlapping"
+        ],
+        "new": [
+          "                Layout.row: root.vertical && !root.reverseLayout ? 1 : 0 // Explicitly define grid coordinates",
+          "                Layout.column: 0                                        // expand arrow precedes the icons"
+        ]
       }
     ]
   }
