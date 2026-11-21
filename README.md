@@ -11,6 +11,7 @@ Instead of bundling static copies of KDE widgets, `plasma-tweaks` extracts the Q
 - `tray`: compact Windows-style system tray, small icons, names on hover, and an expand arrow on the left.
 - `tray-hover` (optional, install separately): opens the tray popup when the pointer is over the expand arrow and closes it 400 ms after the pointer leaves, so you can move onto the icon box.
 - `microphone`: microphone activity indicators and mute controls in Icons-only Task Manager.
+- `launcher`: hides application labels in the Application Launcher favorites grid.
 
 ![tray preview](features/tray/preview.png)
 ![tray-hover preview](features/tray-hover/preview.mp4)
@@ -32,7 +33,7 @@ Instead of bundling static copies of KDE widgets, `plasma-tweaks` extracts the Q
 
 ## Install
 
-`all` installs `tray` and `microphone` (opt-in features such as `tray-hover` are not included):
+`all` installs `tray`, `microphone`, and `launcher` (opt-in features such as `tray-hover` are not included):
 
 ```sh
 git clone https://github.com/dest4590/plasma-tweaks.git
@@ -46,6 +47,7 @@ Or install individual features:
 ./plasma-tweaks install tray --restart
 ./plasma-tweaks install tray-hover --restart
 ./plasma-tweaks install microphone --restart
+./plasma-tweaks install launcher --restart
 ./plasma-tweaks status
 ./plasma-tweaks doctor
 ```
@@ -66,7 +68,7 @@ Run as your desktop user, without `sudo`. `--restart` restarts `plasma-plasmashe
 
 ## How loading and update protection work
 
-System Plasma applets (`org.kde.plasma.systemtray.so` and `org.kde.plasma.taskmanager.so`) embed upstream QML in Qt resources (`:/qt/qml/plasma/applet/...`). To load the patched local QML from `$XDG_DATA_HOME/plasma/plasmoids/` instead of the embedded resources while still using the system C++ applet code, `plasma-tweaks` sets `X-Plasma-RootPath` to `org.local.icontray` / `org.local.taskmanager` and copies the system `.so` into `$XDG_DATA_HOME/plasma-tweaks-plugins/<pkg>/plasma/applets/org.local.<name>.so` exposed via `QT_PLUGIN_PATH`.
+System Plasma applets (`org.kde.plasma.systemtray.so`, `org.kde.plasma.taskmanager.so`, and `org.kde.plasma.kickoff.so`) embed upstream QML in Qt resources (`:/qt/qml/plasma/applet/...`). To load the patched local QML from `$XDG_DATA_HOME/plasma/plasmoids/` instead of the embedded resources while still using the system C++ applet code, `plasma-tweaks` sets `X-Plasma-RootPath` to `org.local.icontray`, `org.local.taskmanager`, or `org.local.kickoff` and copies the system `.so` into `$XDG_DATA_HOME/plasma-tweaks-plugins/<pkg>/plasma/applets/org.local.<name>.so` exposed via `QT_PLUGIN_PATH`.
 
 Both `$XDG_CONFIG_HOME/systemd/user/plasma-plasmashell.service.d/zz-plasma-tweaks.conf` and `~/.local/bin/plasmashell` invoke `plasma-tweaks preflight` before `plasmashell` starts:
 
@@ -75,12 +77,6 @@ Both `$XDG_CONFIG_HOME/systemd/user/plasma-plasmashell.service.d/zz-plasma-tweak
 - If a package is incompatible with the new KDE resources, `preflight` disables only the affected override so the stock system widget is used and `plasmashell` still starts normally.
 
 If your session does not use `plasma-plasmashell.service` and `~/.local/bin` is not ahead of `/usr/bin` in `PATH`, uninstall before upgrading Plasma and check `./plasma-tweaks doctor`.
-
-## Development
-
-```sh
-python3 -m unittest discover -s tests -v
-```
 
 ## Licensing
 

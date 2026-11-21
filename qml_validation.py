@@ -5,6 +5,73 @@ from pathlib import Path
 import tempfile
 import shutil
 import subprocess
+import json
+
+
+def strip_jsonc(text: str) -> str:
+    """Remove JSONC comments and trailing commas while preserving string contents."""
+    out: list[str] = []
+    i = 0
+    quote: str | None = None
+    escape = False
+
+    while i < len(text):
+        ch = text[i]
+        if quote is not None:
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < len(text) and text[i + 1] == "/":
+            i += 2
+            while i < len(text) and text[i] not in "\r\n":
+                i += 1
+            continue
+        if ch == "/" and i + 1 < len(text) and text[i + 1] == "*":
+            i += 2
+            while i + 1 < len(text) and text[i:i + 2] != "*/":
+                if text[i] in "\r\n":
+                    out.append(text[i])
+                i += 1
+            if i + 1 >= len(text):
+                raise ValueError("Unclosed block comment")
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+
+    stripped = "".join(out)
+    # Remove commas that precede a closing brace or bracket.
+    out = []
+    for i, ch in enumerate(stripped):
+        if ch == ",":
+            j = i + 1
+            while j < len(stripped) and stripped[j].isspace():
+                j += 1
+            if j < len(stripped) and stripped[j] in "}]":
+                continue
+        out.append(ch)
+    return "".join(out)
+
+
+def load_jsonc(path: Path) -> dict:
+    try:
+        value = json.loads(strip_jsonc(path.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid JSONC file {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"JSONC root must be an object: {path}")
+    return value
 
 
 def find_qmlformat() -> str | None:

@@ -1,0 +1,72 @@
+{
+  "patches": {
+    "contents/ui/ApplicationsPage.qml": [
+      {
+        "op": "insert_after",
+        "anchor": "                objectName: \"favoritesGridView\"",
+        "text": "\n                showAppNames: false"
+      }
+    ],
+    "contents/ui/KickoffGridView.qml": [
+      {
+        "op": "insert_after",
+        "anchor": "    property alias view: view",
+        "text": "\n    property bool showAppNames: true"
+      },
+      {
+        "op": "insert_after",
+        "anchor": "            id: itemDelegate",
+        "text": "\n            showAppName: root.showAppNames\n            height: root.showAppNames ? implicitHeight : view.cellHeight"
+      },
+      {
+        "op": "replace",
+        "old": [
+          "        cellHeight: KickoffSingleton.gridCellSize",
+          "        cellWidth: KickoffSingleton.gridCellSize"
+        ],
+        "new": [
+          "        cellHeight: cellWidth",
+          "        cellWidth: root.showAppNames ? KickoffSingleton.gridCellSize : (Kirigami.Units.iconSizes.large + Kirigami.Units.iconSizes.huge) / 2 + Kirigami.Units.smallSpacing * 4"
+        ]
+      }
+    ],
+    "contents/ui/KickoffGridDelegate.qml": [
+      {
+        "op": "insert_after",
+        "anchor": "    id: root",
+        "text": "\n    property bool showAppName: true"
+      },
+      {
+        "op": "replace",
+        "old": "            visible: !root.removalPlaceholderActive",
+        "new": "            visible: root.showAppName && !root.removalPlaceholderActive"
+      },
+      {
+        "op": "replace",
+        "old": "            Layout.alignment: Qt.AlignHCenter | Qt.AlignBottom",
+        "new": "            Layout.alignment: Qt.AlignHCenter | (root.showAppName ? Qt.AlignBottom : Qt.AlignVCenter)"
+      },
+      {
+        "op": "replace",
+        "old": "    leftPadding: KickoffSingleton.listItemMetrics.margins.left",
+        "new": "    leftPadding: showAppName ? KickoffSingleton.listItemMetrics.margins.left : topPadding"
+      },
+      {
+        "op": "replace",
+        "old": "    rightPadding: KickoffSingleton.listItemMetrics.margins.right",
+        "new": "    rightPadding: showAppName ? KickoffSingleton.listItemMetrics.margins.right : topPadding"
+      },
+      {
+        "op": "replace",
+        "old": [
+          "    icon.width: Kirigami.Units.iconSizes.large",
+          "    icon.height: Kirigami.Units.iconSizes.large"
+        ],
+        "new": [
+          "    icon.width: showAppName ? Kirigami.Units.iconSizes.large : (Kirigami.Units.iconSizes.large + Kirigami.Units.iconSizes.huge) / 2",
+          "    icon.height: showAppName ? Kirigami.Units.iconSizes.large : (Kirigami.Units.iconSizes.large + Kirigami.Units.iconSizes.huge) / 2"
+        ]
+      }
+    ]
+  }
+}

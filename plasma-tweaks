@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent
@@ -21,7 +22,7 @@ if str(ROOT) not in sys.path:
 
 import qml_validation
 
-FEATURE_ORDER = ("tray", "tray-hover", "microphone")
+FEATURE_ORDER = ("tray", "tray-hover", "microphone", "launcher")
 PACKAGES = {
     "tray": {
         "applet": "org.kde.plasma.systemtray",
@@ -37,11 +38,19 @@ PACKAGES = {
         "resource_prefix": ":/qt/qml/plasma/applet/org/kde/plasma/taskmanager/",
         "features": ("microphone",),
     },
+    "launcher": {
+        "applet": "org.kde.plasma.kickoff",
+        "plugin": "org.local.kickoff",
+        "system_plugin": "org.kde.plasma.kickoff.so",
+        "resource_prefix": ":/qt/qml/plasma/applet/org/kde/plasma/kickoff/",
+        "features": ("launcher",),
+    },
 }
 FEATURE_PACKAGE = {
     "tray": "tray",
     "tray-hover": "tray",
     "microphone": "icontasks",
+    "launcher": "launcher",
 }
 
 PY_EXTRACT_CODE = """
@@ -243,10 +252,12 @@ def patch_text(value: str | list[str]) -> str:
 
 
 def apply_feature_patches(pkg_dir: Path, feature_dir: Path, feature_name: str) -> list[str]:
-    spec_path = feature_dir / "patches.json"
+    spec_path = feature_dir / "patches.jsonc"
+    if not spec_path.is_file():
+        spec_path = feature_dir / "patches.json"
     if not spec_path.is_file():
         raise ValueError(f"[{feature_name}] Missing patch specification: {spec_path}")
-    spec = json.loads(spec_path.read_text())
+    spec = qml_validation.load_jsonc(spec_path)
     changed_files: list[str] = []
 
     for item in spec.get("copy_from", []):
@@ -315,6 +326,51 @@ def validate_staged_package(pkg_dir: Path, pkg_name: str) -> None:
 
 def systemd_quote(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("\n", "\\n").replace("\r", "\\r")
+
+
+def restart_plasmashell() -> None:
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+
+    active = subprocess.run(
+        ["systemctl", "--user", "is-active", "--quiet", "plasma-plasmashell.service"],
+    ).returncode == 0
+    failed = subprocess.run(
+        ["systemctl", "--user", "is-failed", "--quiet", "plasma-plasmashell.service"],
+    ).returncode == 0
+    if failed:
+        subprocess.run(["systemctl", "--user", "reset-failed", "plasma-plasmashell.service"], check=True)
+
+    action = "restart" if active else "start"
+    last_error = None
+    for attempt in range(3):
+        result = subprocess.run(
+            ["systemctl", "--user", action, "plasma-plasmashell.service"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            for _ in range(20):
+                state = subprocess.run(
+                    ["systemctl", "--user", "is-active", "--quiet", "plasma-plasmashell.service"],
+                )
+                if state.returncode == 0:
+                    print("Plasma restarted.")
+                    return
+                process = subprocess.run(
+                    ["pgrep", "-x", "plasmashell"],
+                    capture_output=True,
+                )
+                if process.returncode == 0:
+                    print("Plasma restarted.")
+                    return
+                time.sleep(0.25)
+
+        last_error = (result.stderr.strip() or result.stdout.strip() or f"systemctl returned {result.returncode}")
+        subprocess.run(["systemctl", "--user", "reset-failed", "plasma-plasmashell.service"], check=False)
+        action = "start"
+        time.sleep(0.5)
+
+    raise RuntimeError(f"Could not restart Plasma after 3 attempts: {last_error}")
 
 
 def collect_extra_plugin_paths(plugin_root: Path) -> list[str]:
@@ -392,51 +448,15 @@ class Manager:
         if not isinstance(state, dict):
             raise ValueError("Invalid installation manifest; no files changed.")
         if state.get("schema_version") == 2:
-            if state.get("targets") != list(map(str, self.targets())):
+            current_targets = list(map(str, self.targets()))
+            if state.get("targets") != current_targets:
                 raise ValueError("Paths differ from the installation snapshot. Restore the original HOME/XDG paths.")
             for key in ("desired", "active"):
                 vals = state.get(key)
                 if not isinstance(vals, list) or any(n not in FEATURE_ORDER for n in vals):
                     raise ValueError("Invalid installation manifest; no files changed.")
             return state
-        return self._migrate_v1_state(state)
-
-    def _migrate_v1_state(self, v1: dict) -> dict:
-        old_targets = [
-            str(self.data / "plasma/plasmoids/org.kde.plasma.systemtray"),
-            str(self.plugin_root / "tray"),
-            str(self.data / "plasma/plasmoids/org.kde.plasma.icontasks"),
-            str(self.plugin_root / "microphone"),
-            *map(str, self.shared),
-        ]
-        if v1.get("targets") != old_targets:
-            raise ValueError("Paths differ from the installation snapshot. Restore the original HOME/XDG paths.")
-        installed = v1.get("installed")
-        if not isinstance(installed, list) or any(n not in ("tray", "microphone") for n in installed):
-            raise ValueError("Invalid legacy installation manifest; no files changed.")
-        for feat in installed:
-            if not (self.state / "backup" / feat).is_dir():
-                raise ValueError(f"Missing legacy backup for {feat}; refusing destructive migration.")
-        if installed and not (self.state / "backup/shared").is_dir():
-            raise ValueError("Missing legacy shared backup; refusing destructive migration.")
-        migrated = self._default_state()
-        migrated["desired"] = list(installed)
-        migrated["active"] = list(installed)
-        for k in ("shell", "plugins", "version", "extra_plugins"):
-            if k in v1:
-                migrated[k] = v1[k]
-        migrated["_migrated_from_v1"] = True
-        return migrated
-
-    def _finalize_v1_migration_backups(self) -> None:
-        old_mic_backup = self.state / "backup/microphone"
-        new_ic_backup = self.state / "backup/icontasks"
-        if old_mic_backup.is_dir() and not new_ic_backup.exists():
-            new_ic_backup.mkdir(parents=True, exist_ok=True)
-            if exists(old_mic_backup / "0"):
-                copy(old_mic_backup / "0", new_ic_backup / "0")
-            remove(old_mic_backup)
-        remove(self.plugin_root / "microphone")
+        raise ValueError("Unsupported installation manifest schema; remove the old state and reinstall.")
 
     @contextmanager
     def locked(self):
@@ -505,10 +525,10 @@ class Manager:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, dst)
 
-        if pkg_name == "tray":
+        if pkg_name in ("tray", "launcher"):
             raw_meta = raw_dir / "_plugin_metadata.json"
             if not raw_meta.is_file():
-                raise ValueError("[tray] Plugin metadata missing from extracted systemtray.so.")
+                raise ValueError(f"[{pkg_name}] Plugin metadata missing from extracted system plugin.")
             meta = json.loads(raw_meta.read_text())
             meta.setdefault("KPackageStructure", "Plasma/Applet")
             meta.setdefault("KPlugin", {})["Id"] = PACKAGES[pkg_name]["applet"]
@@ -542,7 +562,10 @@ class Manager:
         active_pkgs = [
             pkg for pkg in PACKAGES if any(f in state["active"] for f in PACKAGES[pkg]["features"])
         ]
-        plugin_parts = [str(self.plugin_root / pkg) for pkg in active_pkgs] + state.get("extra_plugins", [])
+        plugin_parts = [
+            str(self.plugin_root / pkg)
+            for pkg in active_pkgs
+        ] + state.get("extra_plugins", [])
         if active_pkgs and state.get("plugins"):
             plugin_parts.append(state["plugins"])
         plugin_path = ":".join(plugin_parts)
@@ -590,7 +613,6 @@ class Manager:
         allow_partial_disable: bool = False,
     ) -> list[str]:
         warnings: list[str] = []
-        migrating = state.pop("_migrated_from_v1", False)
         desired_ordered = [f for f in FEATURE_ORDER if f in desired]
 
         staged_packages: dict[str, dict] = {}
@@ -618,8 +640,6 @@ class Manager:
                     if exists(path):
                         copy(path, snapshot / str(i))
                 try:
-                    if migrating:
-                        self._finalize_v1_migration_backups()
                     if desired_ordered and not (self.state / "backup/shared").is_dir():
                         self.backup("shared", self.shared)
 
@@ -962,7 +982,7 @@ class Manager:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("install", "uninstall", "status", "rebase", "doctor", "preflight"))
-    parser.add_argument("features", nargs="*", metavar="FEATURE", help="tray, tray-hover, microphone, or all (default)")
+    parser.add_argument("features", nargs="*", metavar="FEATURE", help="tray, tray-hover, microphone, launcher, or all (default)")
     parser.add_argument(
         "--restart",
         action="store_true",
@@ -1003,12 +1023,12 @@ def main() -> int:
             changed, info = manager.rebase()
             if not changed:
                 print("Nothing to rebase.")
-                return 0
-            print(f"rebase: {', '.join(info['rebuilt'])}. Files updated.")
+            else:
+                print(f"rebase: {', '.join(info['rebuilt'])}. Files updated.")
         else:
             names = args.features or ["all"]
             if any(n not in (*FEATURE_ORDER, "all") for n in names) or ("all" in names and len(names) != 1):
-                parser.error("Choose tray, tray-hover, microphone, any combination, or all on its own.")
+                parser.error("Choose tray, tray-hover, microphone, launcher, any combination, or all on its own.")
             names = [f for f in FEATURE_ORDER if f != "tray-hover"] if names == ["all"] else list(dict.fromkeys(names))
 
             if args.action == "status":
@@ -1021,15 +1041,16 @@ def main() -> int:
                 print(f"Warning: {w}", file=sys.stderr)
             if not changed:
                 print("Nothing to change.")
-                return 0
-            print(f"{args.action}: {', '.join(names)}. Files updated.")
+                if args.restart:
+                    print("Restarting Plasma...")
+            else:
+                print(f"{args.action}: {', '.join(names)}. Files updated.")
 
         if args.restart:
             try:
-                subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-                subprocess.run(["systemctl", "--user", "restart", "plasma-plasmashell.service"], check=True)
-            except (OSError, subprocess.CalledProcessError) as error:
-                print(f"Files saved, but Plasma restart failed: {error}. Log out and back in.", file=sys.stderr)
+                restart_plasmashell()
+            except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
+                print(f"Plasma restart failed after automatic recovery attempts: {error}", file=sys.stderr)
                 return 1
         else:
             print(
