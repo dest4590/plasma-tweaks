@@ -8,7 +8,7 @@ import shutil
 from qml_validation import load_jsonc
 
 PATCH_OPS = {
-    "replace": lambda match, added: added,
+    "replace": lambda _, added: added,
     "insert_after": lambda match, added: match + added,
     "insert_before": lambda match, added: added + match,
 }
