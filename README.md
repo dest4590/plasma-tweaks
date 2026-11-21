@@ -19,6 +19,8 @@ Instead of bundling static copies of KDE widgets, `plasma-tweaks` extracts the Q
 ![microphone preview](features/microphone/preview.png)
 ![microphone preview](features/microphone/preview2.png)
 
+![launcher preview](features/launcher/preview.png)
+
 ## Requirements
 
 - KDE Plasma 6 with `plasmashell` and `qtpaths6` (or `/usr/lib{,64}/qt6/bin/qtpaths`).
