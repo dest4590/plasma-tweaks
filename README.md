@@ -15,7 +15,7 @@ Instead of bundling static copies of KDE widgets, `plasma-tweaks` extracts the Q
 
 ### Previews
 
-**Tray-Hover**
+**Tray & Tray-Hover**
 
 <!-- ![tray preview](features/tray/preview.png)   -->
 ![tray-hover preview](features/tray-hover/preview.gif)
