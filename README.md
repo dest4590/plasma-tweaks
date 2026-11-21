@@ -13,11 +13,23 @@ Instead of bundling static copies of KDE widgets, `plasma-tweaks` extracts the Q
 - `microphone`: microphone activity indicators and mute controls in Icons-only Task Manager.
 - `launcher`: hides application labels in the Application Launcher favorites grid. With Icons-only Task Manager on the panel, the standard `Meta+1`–`Meta+9` shortcuts launch favorites by position while Kickoff is open. With Kickoff closed, those shortcuts activate taskbar entries.
 
-![tray preview](features/tray/preview.png)
-![tray-hover preview](features/tray-hover/preview.mp4)
+### Previews
 
-![microphone preview](features/microphone/preview.png)
+**Tray-Hover**
+
+<!-- ![tray preview](features/tray/preview.png)   -->
+![tray-hover preview](features/tray-hover/preview.gif)
+
+---
+
+**Microphone**
+
+![microphone preview](features/microphone/preview.png)  
 ![microphone preview](features/microphone/preview2.png)
+
+---
+
+**Launcher**
 
 ![launcher preview](features/launcher/preview.png)
 
