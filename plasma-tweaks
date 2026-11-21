@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 """User-local KDE Plasma tweaks. Requires Python 3.10+; no pip dependencies."""
+
 import argparse
 from contextlib import contextmanager
 import fcntl
@@ -21,37 +22,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import qml_validation
-
-FEATURE_ORDER = ("tray", "tray-hover", "microphone", "launcher")
-PACKAGES = {
-    "tray": {
-        "applet": "org.kde.plasma.systemtray",
-        "plugin": "org.local.icontray",
-        "system_plugin": "org.kde.plasma.systemtray.so",
-        "resource_prefix": ":/qt/qml/plasma/applet/org/kde/plasma/systemtray/",
-        "features": ("tray", "tray-hover"),
-    },
-    "icontasks": {
-        "applet": "org.kde.plasma.icontasks",
-        "plugin": "org.local.taskmanager",
-        "system_plugin": "org.kde.plasma.taskmanager.so",
-        "resource_prefix": ":/qt/qml/plasma/applet/org/kde/plasma/taskmanager/",
-        "features": ("microphone",),
-    },
-    "launcher": {
-        "applet": "org.kde.plasma.kickoff",
-        "plugin": "org.local.kickoff",
-        "system_plugin": "org.kde.plasma.kickoff.so",
-        "resource_prefix": ":/qt/qml/plasma/applet/org/kde/plasma/kickoff/",
-        "features": ("launcher",),
-    },
-}
-FEATURE_PACKAGE = {
-    "tray": "tray",
-    "tray-hover": "tray",
-    "microphone": "icontasks",
-    "launcher": "launcher",
-}
+from package_catalog import FEATURE_ORDER, PACKAGES, packages_for
+from patching import apply_feature_patches
 
 PY_EXTRACT_CODE = """
 import json, sys
@@ -145,7 +117,9 @@ def find_qtpaths() -> str | None:
     return None
 
 
-def find_system_metadata(qtpaths: str, applet_id: str, user_data: Path | None = None) -> Path | None:
+def find_system_metadata(
+    qtpaths: str, applet_id: str, user_data: Path | None = None
+) -> Path | None:
     rel = f"plasma/plasmoids/{applet_id}/metadata.json"
     env = dict(os.environ)
     env["XDG_DATA_HOME"] = "/nonexistent-plasma-tweaks-xdg-data-home"
@@ -161,12 +135,16 @@ def find_system_metadata(qtpaths: str, applet_id: str, user_data: Path | None = 
                 return Path(out)
     except (OSError, subprocess.CalledProcessError):
         pass
-    for base in (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":"):
+    for base in (
+        os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+    ).split(":"):
         if base:
             candidate = Path(base) / rel
             if candidate.is_file():
                 resolved = candidate.resolve()
-                if user_data is None or not resolved.is_relative_to(user_data.resolve()):
+                if user_data is None or not resolved.is_relative_to(
+                    user_data.resolve()
+                ):
                     return candidate
     return None
 
@@ -185,14 +163,24 @@ def discover(launcher: Path, user_data: Path | None = None) -> dict:
     if shell is None:
         raise ValueError("System plasmashell not found in PATH.")
     shell = shell.resolve()
-    version = subprocess.check_output([str(shell), "--version"], text=True).strip().removeprefix("plasmashell ")
+    version = (
+        subprocess.check_output([str(shell), "--version"], text=True)
+        .strip()
+        .removeprefix("plasmashell ")
+    )
     qtpaths = find_qtpaths()
     if not qtpaths:
-        raise ValueError("Qt 6 qtpaths not found. Install your distribution's Qt 6 tools.")
-    plugins = Path(subprocess.check_output([qtpaths, "--plugin-dir"], text=True).strip())
+        raise ValueError(
+            "Qt 6 qtpaths not found. Install your distribution's Qt 6 tools."
+        )
+    plugins = Path(
+        subprocess.check_output([qtpaths, "--plugin-dir"], text=True).strip()
+    )
     if not plugins.is_absolute() or not plugins.is_dir():
         raise ValueError(f"Invalid Qt plugin directory: {plugins}")
-    icontasks_meta = find_system_metadata(qtpaths, "org.kde.plasma.icontasks", user_data=user_data)
+    icontasks_meta = find_system_metadata(
+        qtpaths, "org.kde.plasma.icontasks", user_data=user_data
+    )
     return {
         "shell": shell,
         "version": version,
@@ -223,12 +211,21 @@ def detect_extractor(root: Path) -> tuple[str, str]:
     return ("none", "")
 
 
-def extract_resources(root: Path, plugin_path: Path, prefix: str, out_dir: Path) -> None:
+def extract_resources(
+    root: Path, plugin_path: Path, prefix: str, out_dir: Path
+) -> None:
     kind, detail = detect_extractor(root)
     if kind == "binary":
         cmd = [detail, str(plugin_path), prefix, str(out_dir)]
     elif kind == "python":
-        cmd = [sys.executable, "-c", PY_EXTRACT_CODE, str(plugin_path), prefix, str(out_dir)]
+        cmd = [
+            sys.executable,
+            "-c",
+            PY_EXTRACT_CODE,
+            str(plugin_path),
+            prefix,
+            str(out_dir),
+        ]
     else:
         raise ValueError(
             "No Qt 6 resource extractor found. Install PySide6/PyQt6 or build helper/extract_qml.cpp."
@@ -237,68 +234,6 @@ def extract_resources(root: Path, plugin_path: Path, prefix: str, out_dir: Path)
     if res.returncode != 0:
         err = res.stderr.strip() or f"extractor exited with {res.returncode}"
         raise ValueError(f"Resource extraction failed for {plugin_path.name}: {err}")
-
-
-PATCH_OPS = {
-    "replace": lambda match, added: added,
-    "insert_after": lambda match, added: match + added,
-    "insert_before": lambda match, added: added + match,
-}
-
-
-def patch_text(value: str | list[str]) -> str:
-    """Patch fields may be a string or a list of lines joined with newlines (a trailing "" adds a final newline)."""
-    return value if isinstance(value, str) else "\n".join(value)
-
-
-def apply_feature_patches(pkg_dir: Path, feature_dir: Path, feature_name: str) -> list[str]:
-    spec_path = feature_dir / "patches.jsonc"
-    if not spec_path.is_file():
-        spec_path = feature_dir / "patches.json"
-    if not spec_path.is_file():
-        raise ValueError(f"[{feature_name}] Missing patch specification: {spec_path}")
-    spec = qml_validation.load_jsonc(spec_path)
-    changed_files: list[str] = []
-
-    for item in spec.get("copy_from", []):
-        src = pkg_dir / item["src"]
-        dst = pkg_dir / item["dst"]
-        if not src.is_file():
-            raise ValueError(f"[{feature_name}] Missing source file for copy_from: {item['src']}")
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-        changed_files.append(item["dst"])
-
-    files_dir = feature_dir / "files"
-    if files_dir.is_dir():
-        for src in sorted(files_dir.rglob("*")):
-            if src.is_file():
-                rel = src.relative_to(files_dir).as_posix()
-                dst = pkg_dir / rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
-                changed_files.append(rel)
-
-    for rel, ops in spec.get("patches", {}).items():
-        target = pkg_dir / rel
-        if not target.is_file():
-            raise ValueError(f"[{feature_name}] Target file missing in extracted KDE resources: {rel}")
-        text = target.read_text()
-        for idx, op in enumerate(ops):
-            kind = op["op"]
-            if kind not in PATCH_OPS:
-                raise ValueError(f"[{feature_name}] {rel} op #{idx}: unknown op {kind!r}")
-            match = patch_text(op["old" if kind == "replace" else "anchor"])
-            count = text.count(match)
-            if count != 1:
-                raise ValueError(f"[{feature_name}] {rel} op #{idx} ({kind}): expected 1 match, found {count}")
-            added = patch_text(op["new" if kind == "replace" else "text"])
-            text = text.replace(match, PATCH_OPS[kind](match, added), 1)
-        target.write_text(text)
-        if rel not in changed_files:
-            changed_files.append(rel)
-
-    return sorted(set(changed_files))
 
 
 def validate_staged_package(pkg_dir: Path, pkg_name: str) -> None:
@@ -320,25 +255,54 @@ def validate_staged_package(pkg_dir: Path, pkg_name: str) -> None:
         try:
             ET.fromstring(main_xml.read_text())
         except ET.ParseError as exc:
-            raise ValueError(f"[{pkg_name}] Invalid contents/config/main.xml: {exc}") from exc
+            raise ValueError(
+                f"[{pkg_name}] Invalid contents/config/main.xml: {exc}"
+            ) from exc
     qml_validation.validate_qml_directory(pkg_dir, pkg_name)
 
 
 def systemd_quote(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("\n", "\\n").replace("\r", "\\r")
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("%", "%%")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    )
 
 
 def restart_plasmashell() -> None:
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
 
-    active = subprocess.run(
-        ["systemctl", "--user", "is-active", "--quiet", "plasma-plasmashell.service"],
-    ).returncode == 0
-    failed = subprocess.run(
-        ["systemctl", "--user", "is-failed", "--quiet", "plasma-plasmashell.service"],
-    ).returncode == 0
+    active = (
+        subprocess.run(
+            [
+                "systemctl",
+                "--user",
+                "is-active",
+                "--quiet",
+                "plasma-plasmashell.service",
+            ],
+        ).returncode
+        == 0
+    )
+    failed = (
+        subprocess.run(
+            [
+                "systemctl",
+                "--user",
+                "is-failed",
+                "--quiet",
+                "plasma-plasmashell.service",
+            ],
+        ).returncode
+        == 0
+    )
     if failed:
-        subprocess.run(["systemctl", "--user", "reset-failed", "plasma-plasmashell.service"], check=True)
+        subprocess.run(
+            ["systemctl", "--user", "reset-failed", "plasma-plasmashell.service"],
+            check=True,
+        )
 
     action = "restart" if active else "start"
     last_error = None
@@ -351,7 +315,13 @@ def restart_plasmashell() -> None:
         if result.returncode == 0:
             for _ in range(20):
                 state = subprocess.run(
-                    ["systemctl", "--user", "is-active", "--quiet", "plasma-plasmashell.service"],
+                    [
+                        "systemctl",
+                        "--user",
+                        "is-active",
+                        "--quiet",
+                        "plasma-plasmashell.service",
+                    ],
                 )
                 if state.returncode == 0:
                     print("Plasma restarted.")
@@ -365,8 +335,15 @@ def restart_plasmashell() -> None:
                     return
                 time.sleep(0.25)
 
-        last_error = (result.stderr.strip() or result.stdout.strip() or f"systemctl returned {result.returncode}")
-        subprocess.run(["systemctl", "--user", "reset-failed", "plasma-plasmashell.service"], check=False)
+        last_error = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or f"systemctl returned {result.returncode}"
+        )
+        subprocess.run(
+            ["systemctl", "--user", "reset-failed", "plasma-plasmashell.service"],
+            check=False,
+        )
         action = "start"
         time.sleep(0.5)
 
@@ -407,17 +384,24 @@ def recovery_directory(data: Path):
 
 class Manager:
     def __init__(self, root: Path, home: Path, data: Path, config: Path):
-        self.root, self.home, self.data, self.config = map(Path, (root, home, data, config))
+        self.root, self.home, self.data, self.config = map(
+            Path, (root, home, data, config)
+        )
         if not all(p.is_absolute() for p in (self.home, self.data, self.config)):
             raise ValueError("HOME and XDG paths must be absolute.")
-        if any(c in str(p) for p in (self.home, self.data, self.config) for c in ("\n", "\r", ":")):
+        if any(
+            c in str(p)
+            for p in (self.home, self.data, self.config)
+            for c in ("\n", "\r", ":")
+        ):
             raise ValueError("HOME and XDG paths cannot contain newlines or colons.")
         self.self_exec = self.root / "plasma-tweaks"
         self.state = self.data / "plasma-tweaks"
         self.manifest = self.state / "manifest.json"
         self.plugin_root = self.data / "plasma-tweaks-plugins"
         self.shared = [
-            self.config / "systemd/user/plasma-plasmashell.service.d/zz-plasma-tweaks.conf",
+            self.config
+            / "systemd/user/plasma-plasmashell.service.d/zz-plasma-tweaks.conf",
             self.home / ".local/bin/plasmashell",
         ]
 
@@ -444,19 +428,27 @@ class Manager:
         try:
             state = json.loads(self.manifest.read_text())
         except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"Corrupted installation manifest ({self.manifest}): {exc}") from exc
+            raise ValueError(
+                f"Corrupted installation manifest ({self.manifest}): {exc}"
+            ) from exc
         if not isinstance(state, dict):
             raise ValueError("Invalid installation manifest; no files changed.")
         if state.get("schema_version") == 2:
             current_targets = list(map(str, self.targets()))
             if state.get("targets") != current_targets:
-                raise ValueError("Paths differ from the installation snapshot. Restore the original HOME/XDG paths.")
+                raise ValueError(
+                    "Paths differ from the installation snapshot. Restore the original HOME/XDG paths."
+                )
             for key in ("desired", "active"):
                 vals = state.get(key)
-                if not isinstance(vals, list) or any(n not in FEATURE_ORDER for n in vals):
+                if not isinstance(vals, list) or any(
+                    n not in FEATURE_ORDER for n in vals
+                ):
                     raise ValueError("Invalid installation manifest; no files changed.")
             return state
-        raise ValueError("Unsupported installation manifest schema; remove the old state and reinstall.")
+        raise ValueError(
+            "Unsupported installation manifest schema; remove the old state and reinstall."
+        )
 
     @contextmanager
     def locked(self):
@@ -495,10 +487,10 @@ class Manager:
         if not plugin_path.is_file():
             raise ValueError(f"System plugin not found: {plugin_path}")
         sources = {"plugin": plugin_path}
-        if pkg_name == "icontasks":
-            meta = platform.get("icontasks_metadata")
+        if metadata_key := info.get("metadata_key"):
+            meta = platform.get(metadata_key)
             if not meta or not Path(meta).is_file():
-                raise ValueError("System metadata not found for org.kde.plasma.icontasks.")
+                raise ValueError(f"System metadata not found for {info['applet']}.")
             sources["metadata"] = Path(meta)
         return sources
 
@@ -510,7 +502,9 @@ class Manager:
         raw_dir = stage_root / f"{pkg_name}-raw"
         pkg_dir = stage_root / pkg_name
         plugin_stage = stage_root / f"{pkg_name}-plugin"
-        extract_resources(self.root, sources["plugin"], PACKAGES[pkg_name]["resource_prefix"], raw_dir)
+        extract_resources(
+            self.root, sources["plugin"], PACKAGES[pkg_name]["resource_prefix"], raw_dir
+        )
 
         for p in raw_dir.rglob("*"):
             if not p.is_file():
@@ -525,10 +519,12 @@ class Manager:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, dst)
 
-        if pkg_name in ("tray", "launcher"):
+        if "metadata" not in sources:
             raw_meta = raw_dir / "_plugin_metadata.json"
             if not raw_meta.is_file():
-                raise ValueError(f"[{pkg_name}] Plugin metadata missing from extracted system plugin.")
+                raise ValueError(
+                    f"[{pkg_name}] Plugin metadata missing from extracted system plugin."
+                )
             meta = json.loads(raw_meta.read_text())
             meta.setdefault("KPackageStructure", "Plasma/Applet")
             meta.setdefault("KPlugin", {})["Id"] = PACKAGES[pkg_name]["applet"]
@@ -536,11 +532,14 @@ class Manager:
             meta = json.loads(sources["metadata"].read_text())
 
         meta["X-Plasma-RootPath"] = PACKAGES[pkg_name]["plugin"]
-        (pkg_dir / "metadata.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
+        (pkg_dir / "metadata.json").write_text(
+            json.dumps(meta, indent=2, ensure_ascii=False) + "\n"
+        )
 
         changed_files: list[str] = ["metadata.json"]
         for feat in features:
-            changed_files.extend(apply_feature_patches(pkg_dir, self.root / "features" / feat, feat))
+            feature_dir = self.root / "features" / PACKAGES[pkg_name]["patches"][feat]
+            changed_files.extend(apply_feature_patches(pkg_dir, feature_dir, feat))
 
         validate_staged_package(pkg_dir, pkg_name)
 
@@ -560,12 +559,13 @@ class Manager:
 
     def _write_shared_files(self, state: dict) -> None:
         active_pkgs = [
-            pkg for pkg in PACKAGES if any(f in state["active"] for f in PACKAGES[pkg]["features"])
+            pkg
+            for pkg in PACKAGES
+            if any(f in state["active"] for f in PACKAGES[pkg]["patches"])
         ]
-        plugin_parts = [
-            str(self.plugin_root / pkg)
-            for pkg in active_pkgs
-        ] + state.get("extra_plugins", [])
+        plugin_parts = [str(self.plugin_root / pkg) for pkg in active_pkgs] + state.get(
+            "extra_plugins", []
+        )
         if active_pkgs and state.get("plugins"):
             plugin_parts.append(state["plugins"])
         plugin_path = ":".join(plugin_parts)
@@ -578,7 +578,9 @@ class Manager:
             f"ExecStartPre=-{shlex.quote(str(self.self_exec))} preflight",
         ]
         if plugin_path:
-            dropin_lines.append('Environment="QT_PLUGIN_PATH=' + systemd_quote(plugin_path) + '"')
+            dropin_lines.append(
+                'Environment="QT_PLUGIN_PATH=' + systemd_quote(plugin_path) + '"'
+            )
         dropin.write_text("\n".join(dropin_lines) + "\n")
         dropin.replace(self.shared[0])
 
@@ -591,7 +593,11 @@ class Manager:
                 f"{shlex.quote(str(self.self_exec))} preflight >/dev/null 2>&1 || true",
             ]
             if plugin_path:
-                launcher_lines.append("export QT_PLUGIN_PATH=" + shlex.quote(plugin_path) + "${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}")
+                launcher_lines.append(
+                    "export QT_PLUGIN_PATH="
+                    + shlex.quote(plugin_path)
+                    + "${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
+                )
             launcher_lines.append("exec " + shlex.quote(state["shell"]) + ' "$@"')
             launcher_tmp.write_text("\n".join(launcher_lines) + "\n")
             launcher_tmp.chmod(0o755)
@@ -618,10 +624,14 @@ class Manager:
         staged_packages: dict[str, dict] = {}
         disabled: dict[str, dict] = {}
 
-        with tempfile.TemporaryDirectory(prefix="plasma-tweaks-stage-", dir=self.data) as stage_str:
+        with tempfile.TemporaryDirectory(
+            prefix="plasma-tweaks-stage-", dir=self.data
+        ) as stage_str:
             stage_root = Path(stage_str)
             for pkg_name in PACKAGES:
-                pkg_features = [f for f in PACKAGES[pkg_name]["features"] if f in desired_ordered]
+                pkg_features = [
+                    f for f in PACKAGES[pkg_name]["patches"] if f in desired_ordered
+                ]
                 if not pkg_features or pkg_name not in rebuild_pkgs:
                     continue
                 assert platform is not None
@@ -648,7 +658,9 @@ class Manager:
                     new_disabled: dict[str, dict] = dict(state.get("disabled", {}))
 
                     for pkg_name, pkg_info in PACKAGES.items():
-                        pkg_features = [f for f in pkg_info["features"] if f in desired_ordered]
+                        pkg_features = [
+                            f for f in pkg_info["patches"] if f in desired_ordered
+                        ]
                         pkg_targets = self.package_targets(pkg_name)
                         if not pkg_features:
                             if (self.state / "backup" / pkg_name).is_dir():
@@ -658,8 +670,10 @@ class Manager:
                                         f"Restored pre-existing user override for {pkg_info['applet']}; "
                                         "verify it is compatible with your current Plasma version."
                                     )
-                            elif any(f in state.get("active", []) for f in pkg_info["features"]):
-                                raise ValueError(f"Missing rollback snapshot: {self.state / 'backup' / pkg_name}")
+                            elif pkg_name in state.get("packages", {}):
+                                raise ValueError(
+                                    f"Missing rollback snapshot: {self.state / 'backup' / pkg_name}"
+                                )
                             new_disabled.pop(pkg_name, None)
                         elif pkg_name in disabled:
                             if pkg_name in state.get("packages", {}):
@@ -715,56 +729,70 @@ class Manager:
                                 path.parent.mkdir(parents=True, exist_ok=True)
                                 staged_r.replace(path)
                         except OSError as rollback_error:
-                            print(f"Could not restore {path}: {rollback_error}", file=sys.stderr)
+                            print(
+                                f"Could not restore {path}: {rollback_error}",
+                                file=sys.stderr,
+                            )
                     raise
         return warnings
 
     def change(self, action: str, names: list[str]) -> tuple[bool, list[str]]:
         with self.locked():
             state = self.load()
-            desired = list(state["desired"])
             if action == "install":
-                for n in names:
-                    if n not in desired:
-                        desired.append(n)
-                affected_pkgs = {FEATURE_PACKAGE[n] for n in names}
-                platform = discover(self.shared[1], self.data)
-                state.update(
-                    shell=str(platform["shell"]),
-                    plugins=str(platform["plugins"]),
-                    version=platform["version"],
-                )
-                if "extra_plugins" not in state:
-                    state["extra_plugins"] = collect_extra_plugin_paths(self.plugin_root)
-            else:
-                removing = [n for n in names if n in desired]
-                if not removing:
-                    return False, []
-                for n in removing:
-                    desired.remove(n)
-                affected_pkgs = {
-                    FEATURE_PACKAGE[n]
-                    for n in removing
-                    if any(f in desired for f in PACKAGES[FEATURE_PACKAGE[n]]["features"])
-                }
-                platform = discover(self.shared[1], self.data) if affected_pkgs else None
-                if platform:
-                    state.update(
-                        shell=str(platform["shell"]),
-                        plugins=str(platform["plugins"]),
-                        version=platform["version"],
-                    )
-                for pkg_name in {FEATURE_PACKAGE[n] for n in removing} - affected_pkgs:
-                    if (self.state / "backup" / pkg_name).is_dir():
-                        pass
-                    elif pkg_name in state.get("packages", {}) or any(
-                        exists(p) for p in self.package_targets(pkg_name)
-                    ):
-                        if pkg_name not in state.get("disabled", {}):
-                            raise ValueError(f"Missing rollback snapshot: {self.state / 'backup' / pkg_name}")
+                return self._change_features(state, names, [])
+            return self._change_features(state, [], names)
 
-            warnings = self._apply_plan(state, desired, affected_pkgs, platform, allow_partial_disable=False)
-            return True, warnings
+    def apply_selection(
+        self, before: set[str], selected: set[str]
+    ) -> tuple[bool, list[str]]:
+        with self.locked():
+            state = self.load()
+            if before != set(state["desired"]):
+                raise ValueError(
+                    "Patch selection changed in another process. Reopen the menu."
+                )
+            installing = [name for name in FEATURE_ORDER if name in selected - before]
+            removing = [name for name in FEATURE_ORDER if name in before - selected]
+            return self._change_features(state, installing, removing)
+
+    def _change_features(
+        self, state: dict, installing: list[str], removing: list[str]
+    ) -> tuple[bool, list[str]]:
+        previous = set(state["desired"])
+        removed = previous.intersection(removing)
+        if not installing and not removed:
+            return False, []
+
+        selection = previous.union(installing) - removed
+        desired = [name for name in FEATURE_ORDER if name in selection]
+        affected = packages_for(installing + list(removed))
+        rebuild = affected & packages_for(desired)
+        platform = discover(self.shared[1], self.data) if rebuild else None
+        if platform:
+            state.update(
+                shell=str(platform["shell"]),
+                plugins=str(platform["plugins"]),
+                version=platform["version"],
+            )
+        if installing and "extra_plugins" not in state:
+            state["extra_plugins"] = collect_extra_plugin_paths(self.plugin_root)
+
+        for pkg_name in affected - rebuild:
+            if (self.state / "backup" / pkg_name).is_dir():
+                continue
+            if pkg_name in state.get("packages", {}) or any(
+                exists(p) for p in self.package_targets(pkg_name)
+            ):
+                if pkg_name not in state.get("disabled", {}):
+                    raise ValueError(
+                        f"Missing rollback snapshot: {self.state / 'backup' / pkg_name}"
+                    )
+
+        warnings = self._apply_plan(
+            state, desired, rebuild, platform, allow_partial_disable=False
+        )
+        return True, warnings
 
     def rebase(self, allow_partial_disable: bool = False) -> tuple[bool, dict]:
         with self.locked():
@@ -780,7 +808,7 @@ class Manager:
             )
             if "extra_plugins" not in state:
                 state["extra_plugins"] = collect_extra_plugin_paths(self.plugin_root)
-            rebuild_pkgs = {FEATURE_PACKAGE[f] for f in desired}
+            rebuild_pkgs = packages_for(desired)
             self._apply_plan(
                 state,
                 desired,
@@ -803,7 +831,7 @@ class Manager:
                     copy(path, snapshot / str(i))
             try:
                 for pkg_name, pkg_info in PACKAGES.items():
-                    pkg_features = [f for f in pkg_info["features"] if f in desired]
+                    pkg_features = [f for f in pkg_info["patches"] if f in desired]
                     if not pkg_features:
                         continue
                     pkg_targets = self.package_targets(pkg_name)
@@ -830,7 +858,10 @@ class Manager:
                             path.parent.mkdir(parents=True, exist_ok=True)
                             staged_r.replace(path)
                     except OSError as rollback_error:
-                        print(f"Could not restore {path}: {rollback_error}", file=sys.stderr)
+                        print(
+                            f"Could not restore {path}: {rollback_error}",
+                            file=sys.stderr,
+                        )
                 raise
         return {"action": "disabled", "disabled": disabled}
 
@@ -845,11 +876,15 @@ class Manager:
             try:
                 platform = discover(self.shared[1], self.data)
             except Exception as exc:
-                return self._disable_all_active(state, desired, f"Platform discovery failed: {exc}")
+                return self._disable_all_active(
+                    state, desired, f"Platform discovery failed: {exc}"
+                )
             stale_pkgs: set[str] = set()
-            for pkg_name in {FEATURE_PACKAGE[f] for f in desired}:
+            for pkg_name in packages_for(desired):
                 pkg_state = state.get("packages", {}).get(pkg_name)
-                if not pkg_state:
+                if not pkg_state or set(pkg_state.get("features", [])) != set(
+                    PACKAGES[pkg_name]["patches"]
+                ) & set(desired):
                     stale_pkgs.add(pkg_name)
                     continue
                 try:
@@ -862,8 +897,13 @@ class Manager:
                     stale_pkgs.add(pkg_name)
                     continue
                 targets = self.package_targets(pkg_name)
-                so_file = targets[1] / "plasma/applets" / f"{PACKAGES[pkg_name]['plugin']}.so"
-                if not (targets[0] / "metadata.json").is_file() or not so_file.is_file():
+                so_file = (
+                    targets[1] / "plasma/applets" / f"{PACKAGES[pkg_name]['plugin']}.so"
+                )
+                if (
+                    not (targets[0] / "metadata.json").is_file()
+                    or not so_file.is_file()
+                ):
                     stale_pkgs.add(pkg_name)
 
             if not stale_pkgs:
@@ -874,7 +914,9 @@ class Manager:
                 plugins=str(platform["plugins"]),
                 version=platform["version"],
             )
-            self._apply_plan(state, desired, stale_pkgs, platform, allow_partial_disable=True)
+            self._apply_plan(
+                state, desired, stale_pkgs, platform, allow_partial_disable=True
+            )
             updated = self.load()
             return {
                 "action": "rebuilt",
@@ -886,23 +928,47 @@ class Manager:
         with self.locked():
             state = self.load()
             for name in names:
-                pkg = FEATURE_PACKAGE[name]
-                targets = self.package_targets(pkg)
-                plugin = PACKAGES[pkg]["plugin"]
-                if pkg in state.get("disabled", {}) and name in state.get("disabled", {}).get(pkg, {}).get("features", []):
-                    reason = state["disabled"][pkg].get("reason", "incompatible")
-                    label = f"disabled ({reason})"
-                elif name in state["active"]:
-                    complete = (
-                        (targets[0] / "metadata.json").is_file()
-                        and (targets[1] / "plasma/applets" / f"{plugin}.so").is_file()
-                        and all(p.is_file() for p in self.shared)
+                packages = packages_for([name])
+                disabled = state.get("disabled", {})
+                failed = next(
+                    (
+                        pkg
+                        for pkg in sorted(packages)
+                        if name in disabled.get(pkg, {}).get("features", [])
+                    ),
+                    None,
+                )
+                if failed:
+                    label = (
+                        f"disabled ({disabled[failed].get('reason', 'incompatible')})"
                     )
-                    label = "active" if complete else "incomplete (run rebase to repair)"
+                elif name in state["active"]:
+                    complete = all(
+                        name
+                        in state.get("packages", {}).get(pkg, {}).get("features", [])
+                        and (self.package_targets(pkg)[0] / "metadata.json").is_file()
+                        and (
+                            self.package_targets(pkg)[1]
+                            / "plasma/applets"
+                            / f"{PACKAGES[pkg]['plugin']}.so"
+                        ).is_file()
+                        for pkg in packages
+                    ) and all(p.is_file() for p in self.shared)
+                    label = (
+                        "active" if complete else "incomplete (run rebase to repair)"
+                    )
                 elif name in state["desired"]:
                     label = "desired (not active; run rebase)"
                 else:
-                    label = "not managed" if any(exists(p) for p in targets) else "not installed"
+                    label = (
+                        "not managed"
+                        if any(
+                            exists(p)
+                            for pkg in packages
+                            for p in self.package_targets(pkg)
+                        )
+                        else "not installed"
+                    )
                 print(f"{name}: {label}")
 
     def doctor(self) -> dict:
@@ -912,7 +978,11 @@ class Manager:
             report["plasma_version"] = platform["version"]
             report["shell"] = str(platform["shell"])
             report["plugins_dir"] = str(platform["plugins"])
-            report["icontasks_metadata"] = str(platform["icontasks_metadata"]) if platform["icontasks_metadata"] else None
+            report["icontasks_metadata"] = (
+                str(platform["icontasks_metadata"])
+                if platform["icontasks_metadata"]
+                else None
+            )
         except Exception as exc:
             report["ok"] = False
             report["issues"].append(f"Platform discovery failed: {exc}")
@@ -923,7 +993,9 @@ class Manager:
         if ext_kind == "none":
             report["ok"] = False
             report["issues"].append("No Qt 6 resource extractor available.")
-        report["qml_validator"] = qml_validation.find_qmlformat() or "delimiter-fallback"
+        report["qml_validator"] = (
+            qml_validation.find_qmlformat() or "delimiter-fallback"
+        )
 
         try:
             state = self.load()
@@ -942,14 +1014,18 @@ class Manager:
                 try:
                     sources = self._package_sources(pkg_name, platform)
                     hashes = {k: sha256_file(p) for k, p in sources.items()}
-                    recorded = state.get("packages", {}).get(pkg_name, {}).get("sources")
+                    recorded = (
+                        state.get("packages", {}).get(pkg_name, {}).get("sources")
+                    )
                     if recorded is None:
                         source_status[pkg_name] = "not installed"
                     elif recorded == hashes:
                         source_status[pkg_name] = "matches"
                     else:
                         source_status[pkg_name] = "changed (run rebase)"
-                        report["issues"].append(f"Source artifacts changed for {pkg_name}; run rebase.")
+                        report["issues"].append(
+                            f"Source artifacts changed for {pkg_name}; run rebase."
+                        )
                 except Exception as exc:
                     source_status[pkg_name] = f"missing ({exc})"
         report["sources"] = source_status
@@ -962,33 +1038,49 @@ class Manager:
             )
         report["other_dropins"] = other_dropins
 
-        path_entries = [Path(p).resolve() for p in os.environ.get("PATH", "").split(":") if p]
+        path_entries = [
+            Path(p).resolve() for p in os.environ.get("PATH", "").split(":") if p
+        ]
         local_bin = (self.home / ".local/bin").resolve()
         usr_bin = Path("/usr/bin").resolve()
-        local_first = (
-            local_bin in path_entries
-            and (usr_bin not in path_entries or path_entries.index(local_bin) < path_entries.index(usr_bin))
+        local_first = local_bin in path_entries and (
+            usr_bin not in path_entries
+            or path_entries.index(local_bin) < path_entries.index(usr_bin)
         )
         report["pre_start"] = {
             "systemd_dropin": self.shared[0].is_file(),
             "local_bin_first_in_path": local_first,
         }
         if not self.shared[0].is_file() and not local_first:
-            report["issues"].append("No active pre-start hook detected; uninstall before KDE updates.")
+            report["issues"].append(
+                "No active pre-start hook detected; uninstall before KDE updates."
+            )
 
         return report
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("install", "uninstall", "status", "rebase", "doctor", "preflight"))
-    parser.add_argument("features", nargs="*", metavar="FEATURE", help="tray, tray-hover, microphone, launcher, or all (default)")
+    parser.add_argument(
+        "action",
+        nargs="?",
+        choices=("install", "uninstall", "status", "rebase", "doctor", "preflight"),
+        help="Open the interactive patch menu when omitted.",
+    )
+    parser.add_argument(
+        "features",
+        nargs="*",
+        metavar="FEATURE",
+        help="tray, tray-hover, microphone, launcher, or all (default)",
+    )
     parser.add_argument(
         "--restart",
         action="store_true",
         help="Restart plasma-plasmashell.service after changes (briefly hides the panel).",
     )
     args = parser.parse_args()
+    if args.action is None and not (sys.stdin.isatty() and sys.stdout.isatty()):
+        parser.error("Specify an action, or run in a terminal to open the patch menu.")
 
     try:
         home = Path.home()
@@ -1015,7 +1107,25 @@ def main() -> int:
                 print(f"plasma-tweaks preflight warning: {exc}", file=sys.stderr)
             return 0
 
-        if args.action == "rebase":
+        if args.action is None:
+            from patch_menu import select_patches
+
+            if os.geteuid() == 0:
+                raise ValueError("Run as your desktop user, without sudo.")
+            state = manager.load()
+            before = set(state["desired"])
+            choice = select_patches(state, args.restart)
+            if choice is None:
+                return 0
+            selected, args.restart = choice
+            changed, warnings = manager.apply_selection(before, selected)
+            for warning in warnings:
+                print(f"Warning: {warning}", file=sys.stderr)
+            if not changed:
+                print("Nothing to change.")
+                return 0
+            print("Patch selection applied.")
+        elif args.action == "rebase":
             if args.features:
                 parser.error("rebase does not accept feature arguments.")
             if os.geteuid() == 0:
@@ -1027,9 +1137,17 @@ def main() -> int:
                 print(f"rebase: {', '.join(info['rebuilt'])}. Files updated.")
         else:
             names = args.features or ["all"]
-            if any(n not in (*FEATURE_ORDER, "all") for n in names) or ("all" in names and len(names) != 1):
-                parser.error("Choose tray, tray-hover, microphone, launcher, any combination, or all on its own.")
-            names = [f for f in FEATURE_ORDER if f != "tray-hover"] if names == ["all"] else list(dict.fromkeys(names))
+            if any(n not in (*FEATURE_ORDER, "all") for n in names) or (
+                "all" in names and len(names) != 1
+            ):
+                parser.error(
+                    "Choose tray, tray-hover, microphone, launcher, any combination, or all on its own."
+                )
+            names = (
+                [f for f in FEATURE_ORDER if f != "tray-hover"]
+                if names == ["all"]
+                else list(dict.fromkeys(names))
+            )
 
             if args.action == "status":
                 manager.status(names)
@@ -1050,7 +1168,10 @@ def main() -> int:
             try:
                 restart_plasmashell()
             except (OSError, subprocess.CalledProcessError, RuntimeError) as error:
-                print(f"Plasma restart failed after automatic recovery attempts: {error}", file=sys.stderr)
+                print(
+                    f"Plasma restart failed after automatic recovery attempts: {error}",
+                    file=sys.stderr,
+                )
                 return 1
         else:
             print(

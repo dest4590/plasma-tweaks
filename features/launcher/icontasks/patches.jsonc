@@ -1,0 +1,33 @@
+{
+  "patches": {
+    "contents/ui/main.qml": [
+      {
+        "op": "insert_after",
+        "anchor": [
+          "PlasmoidItem {",
+          "    id: tasks"
+        ],
+        "lines": [
+          "",
+          "    property QtObject favoriteShortcutRouter"
+        ]
+      },
+      {
+        "op": "replace",
+        "old": "            tasks.activateTaskAtIndex(index);",
+        "new": [
+          "            if (!tasks.favoriteShortcutRouter) {",
+          "                const url = Qt.resolvedUrl(\"../../../org.kde.plasma.kickoff/contents/ui/FavoriteShortcutRouter.qml\");",
+          "                const component = Qt.createComponent(url);",
+          "                if (component.status === Component.Ready) {",
+          "                    tasks.favoriteShortcutRouter = component.createObject(tasks);",
+          "                }",
+          "            }",
+          "            if (!tasks.favoriteShortcutRouter?.activate(index)) {",
+          "                tasks.activateTaskAtIndex(index);",
+          "            }"
+        ]
+      }
+    ]
+  }
+}

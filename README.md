@@ -11,7 +11,7 @@ Instead of bundling static copies of KDE widgets, `plasma-tweaks` extracts the Q
 - `tray`: compact Windows-style system tray, small icons, names on hover, and an expand arrow on the left.
 - `tray-hover` (optional, install separately): opens the tray popup when the pointer is over the expand arrow and closes it 400 ms after the pointer leaves, so you can move onto the icon box.
 - `microphone`: microphone activity indicators and mute controls in Icons-only Task Manager.
-- `launcher`: hides application labels in the Application Launcher favorites grid.
+- `launcher`: hides application labels in the Application Launcher favorites grid. With Icons-only Task Manager on the panel, the standard `Meta+1`–`Meta+9` shortcuts launch favorites by position while Kickoff is open. With Kickoff closed, those shortcuts activate taskbar entries.
 
 ![tray preview](features/tray/preview.png)
 ![tray-hover preview](features/tray-hover/preview.mp4)
@@ -32,6 +32,11 @@ Instead of bundling static copies of KDE widgets, `plasma-tweaks` extracts the Q
     Requires `Qt6Core` development headers and a C++17 compiler.
 
 ## Install
+
+Run `./plasma-tweaks` in a terminal to open the patch menu. Use the arrow
+keys to move, Space to toggle a patch, Enter to apply the selection, and
+Esc or Q to cancel. Press R to toggle restarting Plasma after applying.
+Installed patches start checked. Unchecking one removes it when you apply.
 
 `all` installs `tray`, `microphone`, and `launcher` (opt-in features such as `tray-hover` are not included):
 
@@ -77,6 +82,20 @@ Both `$XDG_CONFIG_HOME/systemd/user/plasma-plasmashell.service.d/zz-plasma-tweak
 - If a package is incompatible with the new KDE resources, `preflight` disables only the affected override so the stock system widget is used and `plasmashell` still starts normally.
 
 If your session does not use `plasma-plasmashell.service` and `~/.local/bin` is not ahead of `/usr/bin` in `PATH`, uninstall before upgrading Plasma and check `./plasma-tweaks doctor`.
+
+## Adding a patch
+
+Register each feature's applet and overlay directory in `package_catalog.py`.
+A feature can contribute patches to more than one applet, as `launcher`
+does for Kickoff and Icons-only Task Manager.
+
+An overlay directory contains `patches.jsonc` and can include a `files/`
+directory mirroring paths inside the applet package. Operations run in order
+and require a unique match in the staged source. Use `replace` with `old`
+and `new` for literal replacements. For `insert_before` and `insert_after`,
+use `anchor` and a `lines` array to insert complete lines. An anchor can be
+a string or an array of consecutive lines. Existing insertions using `text`
+continue to use literal matching and concatenate exactly as written.
 
 ## Licensing
 

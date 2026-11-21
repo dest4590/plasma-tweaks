@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 """QML/JS syntax validation helpers for staged plasma-tweaks packages."""
+
 from pathlib import Path
 import tempfile
 import shutil
 import subprocess
 import json
+import re
 
 
 def strip_jsonc(text: str) -> str:
@@ -38,8 +40,9 @@ def strip_jsonc(text: str) -> str:
                 i += 1
             continue
         if ch == "/" and i + 1 < len(text) and text[i + 1] == "*":
+            out.append(" ")
             i += 2
-            while i + 1 < len(text) and text[i:i + 2] != "*/":
+            while i + 1 < len(text) and text[i : i + 2] != "*/":
                 if text[i] in "\r\n":
                     out.append(text[i])
                 i += 1
@@ -50,18 +53,11 @@ def strip_jsonc(text: str) -> str:
         out.append(ch)
         i += 1
 
-    stripped = "".join(out)
-    # Remove commas that precede a closing brace or bracket.
-    out = []
-    for i, ch in enumerate(stripped):
-        if ch == ",":
-            j = i + 1
-            while j < len(stripped) and stripped[j].isspace():
-                j += 1
-            if j < len(stripped) and stripped[j] in "}]":
-                continue
-        out.append(ch)
-    return "".join(out)
+    # Match strings first so that commas inside them are preserved.
+    trailing_comma = re.compile(r'"(?:[^"\\]|\\.)*"|,(?=\s*[}\]])', re.DOTALL)
+    return trailing_comma.sub(
+        lambda match: "" if match.group() == "," else match.group(), "".join(out)
+    )
 
 
 def load_jsonc(path: Path) -> dict:
@@ -110,8 +106,10 @@ def check_balanced_delimiters(text: str, rel_path: str, pkg_name: str) -> None:
             if nxt == "*":
                 end = text.find("*/", i + 2)
                 if end == -1:
-                    raise ValueError(f"[{pkg_name}] Unclosed block comment in {rel_path} (line {line})")
-                line += text[i:end + 2].count("\n")
+                    raise ValueError(
+                        f"[{pkg_name}] Unclosed block comment in {rel_path} (line {line})"
+                    )
+                line += text[i : end + 2].count("\n")
                 i = end + 2
                 continue
         if ch in ('"', "'", "`"):
@@ -132,25 +130,32 @@ def check_balanced_delimiters(text: str, rel_path: str, pkg_name: str) -> None:
                     break
                 i += 1
             else:
-                raise ValueError(f"[{pkg_name}] Unclosed string literal in {rel_path} (line {start_line})")
+                raise ValueError(
+                    f"[{pkg_name}] Unclosed string literal in {rel_path} (line {start_line})"
+                )
             continue
         if ch in pairs:
             stack.append((ch, line))
         elif ch in closing:
             if not stack or stack[-1][0] != closing[ch]:
-                raise ValueError(f"[{pkg_name}] Unbalanced delimiters in {rel_path} at line {line}")
+                raise ValueError(
+                    f"[{pkg_name}] Unbalanced delimiters in {rel_path} at line {line}"
+                )
             stack.pop()
         i += 1
 
     if stack:
         open_ch, open_line = stack[-1]
-        raise ValueError(f"[{pkg_name}] Unbalanced delimiters in {rel_path}: unclosed '{open_ch}' from line {open_line}")
+        raise ValueError(
+            f"[{pkg_name}] Unbalanced delimiters in {rel_path}: unclosed '{open_ch}' from line {open_line}"
+        )
 
 
 def validate_qml_directory(pkg_dir: Path, pkg_name: str) -> list[str]:
     warnings: list[str] = []
     files = sorted(
-        p for p in pkg_dir.rglob("*")
+        p
+        for p in pkg_dir.rglob("*")
         if p.is_file() and p.suffix in (".qml", ".js", ".mjs")
     )
     for path in files:
@@ -159,7 +164,9 @@ def validate_qml_directory(pkg_dir: Path, pkg_name: str) -> list[str]:
 
     qmlformat = find_qmlformat()
     if not qmlformat:
-        return ["qmlformat not found; ran basic delimiter check only (not full QML syntax)."]
+        return [
+            "qmlformat not found; ran basic delimiter check only (not full QML syntax)."
+        ]
 
     probe = (
         "pragma ComponentBehavior: Bound\n"
@@ -167,10 +174,12 @@ def validate_qml_directory(pkg_dir: Path, pkg_name: str) -> list[str]:
         "Item {\n"
         "    required property int idNum\n"
         "    property var maybeObj\n"
-        "    property string t: maybeObj?.text ?? \"\"\n"
+        '    property string t: maybeObj?.text ?? ""\n'
         "}\n"
     )
-    with tempfile.NamedTemporaryFile("w", suffix=".qml", delete=False, encoding="utf-8") as tf:
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".qml", delete=False, encoding="utf-8"
+    ) as tf:
         tf.write(probe)
         probe_path = Path(tf.name)
     try:
@@ -193,14 +202,22 @@ def validate_qml_directory(pkg_dir: Path, pkg_name: str) -> list[str]:
         if path.suffix != ".qml":
             continue
         cmd = [qmlformat, "--ignore-settings", str(path)]
-        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-        if res.returncode != 0 and "Unknown option 'ignore-settings'" in (res.stderr or ""):
+        res = subprocess.run(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+        )
+        if res.returncode != 0 and "Unknown option 'ignore-settings'" in (
+            res.stderr or ""
+        ):
             cmd = [qmlformat, str(path)]
-            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            res = subprocess.run(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+            )
         if res.returncode != 0:
             err = res.stderr.strip()
             if err:
-                raise ValueError(f"[{pkg_name}] QML syntax check failed for {rel}: {err}")
+                raise ValueError(
+                    f"[{pkg_name}] QML syntax check failed for {rel}: {err}"
+                )
             warnings.append(
                 f"qmlformat returned {res.returncode} without diagnostics for {rel}; "
                 "kept delimiter-only validation for this file."

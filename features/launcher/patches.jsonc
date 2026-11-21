@@ -4,19 +4,26 @@
       {
         "op": "insert_after",
         "anchor": "                objectName: \"favoritesGridView\"",
-        "text": "\n                showAppNames: false"
+        "lines": [
+          "                showAppNames: false"
+        ]
       }
     ],
     "contents/ui/KickoffGridView.qml": [
       {
         "op": "insert_after",
         "anchor": "    property alias view: view",
-        "text": "\n    property bool showAppNames: true"
+        "lines": [
+          "    property bool showAppNames: true"
+        ]
       },
       {
         "op": "insert_after",
         "anchor": "            id: itemDelegate",
-        "text": "\n            showAppName: root.showAppNames\n            height: root.showAppNames ? implicitHeight : view.cellHeight"
+        "lines": [
+          "            showAppName: root.showAppNames",
+          "            height: root.showAppNames ? implicitHeight : view.cellHeight"
+        ]
       },
       {
         "op": "replace",
@@ -34,7 +41,9 @@
       {
         "op": "insert_after",
         "anchor": "    id: root",
-        "text": "\n    property bool showAppName: true"
+        "lines": [
+          "    property bool showAppName: true"
+        ]
       },
       {
         "op": "replace",
@@ -65,6 +74,24 @@
         "new": [
           "    icon.width: showAppName ? Kirigami.Units.iconSizes.large : (Kirigami.Units.iconSizes.large + Kirigami.Units.iconSizes.huge) / 2",
           "    icon.height: showAppName ? Kirigami.Units.iconSizes.large : (Kirigami.Units.iconSizes.large + Kirigami.Units.iconSizes.huge) / 2"
+        ]
+      }
+    ],
+    "contents/ui/main.qml": [
+      {
+        "op": "insert_after",
+        "anchor": "import \"code/tools.js\" as Tools",
+        "lines": [
+          "import \"code/favoriteShortcuts.js\" as FavoriteShortcuts"
+        ]
+      },
+      {
+        "op": "insert_after",
+        "anchor": "    id: kickoff",
+        "lines": [
+          "",
+          "    onExpandedChanged: FavoriteShortcuts.setExpanded(kickoff, kickoff.expanded)",
+          "    Component.onDestruction: FavoriteShortcuts.setExpanded(kickoff, false)"
         ]
       }
     ]
