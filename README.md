@@ -9,7 +9,7 @@ KDE Plasma customizations with one CLI.
 Instead of bundling static copies of KDE widgets, `plasma-tweaks` extracts the QML/config resources from your installed Plasma plugins at install/rebase time, applies targeted patches, validates the staged package, and publishes local overrides.
 
 - `tray`: compact Windows-style system tray, small icons, names on hover, and an expand arrow on the left.
-- `tray-hover` (optional, install separately): opens the tray popup when the pointer is over the expand arrow and closes it 400 ms after the pointer leaves, so you can move onto the icon box.
+- `tray-hover`: opens the tray popup when the pointer is over the expand arrow and closes it 400 ms after the pointer leaves, so you can move onto the icon box.
 - `microphone`: microphone activity indicators and mute controls in Icons-only Task Manager.
 - `launcher`: hides application labels in the Application Launcher favorites grid. With Icons-only Task Manager on the panel, the standard `Meta+1`–`Meta+9` shortcuts launch favorites by position while Kickoff is open. With Kickoff closed, those shortcuts activate taskbar entries.
 
@@ -52,7 +52,7 @@ keys to move, Space to toggle a patch, Enter to apply the selection, and
 Esc or Q to cancel. Press R to toggle restarting Plasma after applying.
 Installed patches start checked. Unchecking one removes it when you apply.
 
-`all` installs `tray`, `microphone`, and `launcher` (opt-in features such as `tray-hover` are not included):
+`all` installs every feature: `tray`, `tray-hover`, `microphone`, and `launcher`. Omitting the feature argument also defaults to `all`:
 
 ```sh
 git clone https://github.com/dest4590/plasma-tweaks.git

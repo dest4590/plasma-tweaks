@@ -1144,7 +1144,7 @@ def main() -> int:
                     "Choose tray, tray-hover, microphone, launcher, any combination, or all on its own."
                 )
             names = (
-                [f for f in FEATURE_ORDER if f != "tray-hover"]
+                list(FEATURE_ORDER)
                 if names == ["all"]
                 else list(dict.fromkeys(names))
             )
