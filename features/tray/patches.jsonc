@@ -211,6 +211,54 @@
           "                Layout.row: root.vertical && !root.reverseLayout ? 1 : 0 // Explicitly define grid coordinates",
           "                Layout.column: 0                                        // expand arrow precedes the icons"
         ]
+      },
+      {
+        "op": "replace",
+        "old": [
+          "    KItemModels.KSortFilterProxyModel {",
+          "        id: activeModel"
+        ],
+        "new": [
+          "    // Ignore incomplete status notifier registrations that reserve a blank cell.",
+          "    KItemModels.KSortFilterProxyModel {",
+          "        id: validItemsModel",
+          "        filterRoleName: \"Id\"",
+          "        filterRowCallback: (sourceRow, sourceParent) => {",
+          "            const id = sourceModel.data(sourceModel.index(sourceRow, 0, sourceParent), filterRole);",
+          "            return id !== \"\";",
+          "        }",
+          "        Component.onCompleted: sourceModel = Plasmoid.systemTrayModel",
+          "    }",
+          "",
+          "    KItemModels.KSortFilterProxyModel {",
+          "        id: activeModel"
+        ]
+      },
+      {
+        "op": "replace",
+        "old": [
+          "            return value === PlasmaCore.Types.ActiveStatus;",
+          "        }",
+          "        Component.onCompleted: sourceModel = Plasmoid.systemTrayModel // avoid unnecessary binding, it causes loops"
+        ],
+        "new": [
+          "            return value === PlasmaCore.Types.ActiveStatus;",
+          "        }",
+          "        Component.onCompleted: sourceModel = validItemsModel // avoid unnecessary binding, it causes loops"
+        ]
+      },
+      {
+        "op": "replace",
+        "old": [
+          "            return value === PlasmaCore.Types.PassiveStatus",
+          "        }",
+          "        Component.onCompleted: sourceModel = Plasmoid.systemTrayModel // avoid unnecessary binding, it causes loops"
+        ],
+        "new": [
+          "            return value === PlasmaCore.Types.PassiveStatus",
+          "        }",
+          "        Component.onCompleted: sourceModel = validItemsModel // avoid unnecessary binding, it causes loops"
+        ]
       }
     ]
   }
